@@ -1,0 +1,23 @@
+{
+  "name": "demonic-bot",
+  "version": "1.0.0",
+  "description": "DEMONIC WhatsApp Bot Professional v1.0.0",
+  "main": "index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0 <23.0.0"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "author": "DEMONIC",
+  "license": "MIT",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.0",
+    "axios": "^1.6.8",
+    "chalk": "^4.1.2",
+    "fs-extra": "^11.2.0",
+    "node-fetch": "^3.3.2",
+    "pino": "^8.19.0"
+  }
+}

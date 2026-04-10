@@ -1,7 +1,7 @@
 {
   "name": "demonic-bot",
-  "version": "1.0.0",
-  "description": "DEMONIC WhatsApp Bot Professional v1.0.0",
+  "version": "1.7.0",
+  "description": "DEMONIC WhatsApp Bot Professional v1.7.0",
   "main": "index.js",
   "type": "commonjs",
   "engines": {

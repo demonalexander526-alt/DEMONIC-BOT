@@ -1,7 +1,7 @@
 /**
  * ============================================
  * 🤖 DEMONIC WhatsApp Bot
- * Version: 1.0.0
+ * Version: 1.7.0
  * - Professional Edition
  * - Integrated AI & Media Downloads
  * CREDITS BAN CLAN
@@ -30,7 +30,7 @@ const axios = require("axios");
 
 
 const BOT_NAME = "DEMONIC";
-const VERSION = "1.0.0";
+const VERSION = "1.7.0";
 const GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"; // Get your free key at https://aistudio.google.com
 const VIRUSTOTAL_API_KEY = "YOUR_VIRUSTOTAL_API_KEY"; // Get free key at https://www.virustotal.com/gui/join-us
 
@@ -359,9 +359,12 @@ async function startBot() {
   try {
     const { state, saveCreds } = await useMultiFileAuthState("./session");
 
-    console.log(chalk.cyan.bold("\n╔════════════════════════════════════╗"));
-    console.log(chalk.cyan.bold("║     🤖 DEMONIC BOT STARTING        ║"));
-    console.log(chalk.cyan.bold("╚════════════════════════════════════╝\n"));
+    console.log(chalk.magenta.bold("\n╔════════════════════════════════════════════════════════════════╗"));
+    console.log(chalk.magenta.bold("║                      NEXO-TECH SYSTEM BOOTSTRAP                ║"));
+    console.log(chalk.magenta.bold("║                 PROFESSIONAL WHATSAPP BOT FRAMEWORK            ║"));
+    console.log(chalk.magenta.bold("║                          DEMONIC v1.7.0                        ║"));
+    console.log(chalk.magenta.bold("╚════════════════════════════════════════════════════════════════╝\n"));
+    console.log(chalk.white("🔐 Owner control  |  📡 WhatsApp bridge  |  ⚡ AI-powered commands\n"));
 
     const { version, isLatest } = await fetchLatestBaileysVersion().catch(() => ({ version: "6.7.0", isLatest: true }));
     console.log(chalk.blue(`📡 Using Baileys v${version} (Latest: ${isLatest})`));
@@ -3650,15 +3653,14 @@ process.on("SIGINT", () => {
 });
 
 
-console.log(chalk.red.bold("\n╔═════════════════════════════════════════╗"));
-console.log(chalk.red.bold("║                                         ║"));
-console.log(chalk.red.bold("║    🔥 DEMONIC WHATSAPP BOT v1.0.0 🔥    ║"));
-console.log(chalk.red.bold("║                                         ║"));
-console.log(chalk.red.bold("║         Created By: DEMON ALEX          ║"));
-console.log(chalk.red.bold("║         Status: INITIALIZING...         ║"));
-console.log(chalk.red.bold("║                                         ║"));
-console.log(chalk.red.bold("╚═════════════════════════════════════════╝\n"));
+console.log(chalk.green.bold("\n╔════════════════════════════════════════════════════════════════╗"));
+console.log(chalk.green.bold("║                      NEXO-TECH PLATFORM READY                 ║"));
+console.log(chalk.green.bold(`║              DEMONIC WHATSAPP BOT v${VERSION} — PROFESSIONAL              ║`));
+console.log(chalk.green.bold("║     NEXO-TECH | AI · DOWNLOADS · SECURITY · CHAT AUTOMATION     ║"));
+console.log(chalk.green.bold("╚════════════════════════════════════════════════════════════════╝\n"));
 
+console.log(chalk.white("🔹 NEXO-TECH launch complete — optimized for production terminals."));
+console.log(chalk.white("🔹 Use /menu after pairing to access management, downloads, and AI commands.\n"));
 console.log(chalk.cyan("✨ ENABLED FEATURES:"));
 console.log(chalk.yellow("   Command System"));
 console.log(chalk.yellow("  🐛 Bug Message Spam"));

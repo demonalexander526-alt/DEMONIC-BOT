@@ -373,6 +373,83 @@ async function startBot() {
       markOnlineOnConnect: true
     });
 
+    sock.ev.on("creds.update", saveCreds);
+
+    const waitForSocketConnection = () => new Promise((resolve) => {
+      let resolved = false;
+      const handler = (update) => {
+        if (["open", "connecting"].includes(update.connection)) {
+          if (!resolved) {
+            resolved = true;
+            sock.ev.off("connection.update", handler);
+            resolve();
+          }
+        }
+      };
+
+      sock.ev.on("connection.update", handler);
+      setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          sock.ev.off("connection.update", handler);
+          resolve();
+        }
+      }, 30000);
+    });
+
+    sock.ev.on("connection.update", async (update) => {
+      const { connection, lastDisconnect } = update;
+
+      if (connection === "connecting") {
+        console.log(chalk.yellow.bold("⏳ Connecting to WhatsApp..."));
+      }
+
+      if (connection === "open") {
+        isStarting = false;
+        
+        // Professional Feature: Auto Bio Status Updater
+        setInterval(async () => {
+          try {
+            const uptime = process.uptime();
+            const days = Math.floor(uptime / (3600 * 24));
+            const hours = Math.floor((uptime % (3600 * 24)) / 3600);
+            const minutes = Math.floor((uptime % 3600) / 60);
+            const status = `🤖 DEMONIC v${VERSION} | 🟢 Online | ⏱️ Uptime: ${days}d ${hours}h ${minutes}m`;
+            await sock.updateProfileStatus(status);
+          } catch (e) {
+            // ignore if unsupported by the account
+          }
+        }, 300000); // Updates every 5 minutes
+
+        console.log(chalk.green.bold.bgGreen.black(`\n✅ ${BOT_NAME} v${VERSION} IS NOW ONLINE!\n`));
+        console.log(chalk.blue.bold(`📊 Bot Features Enabled:`));
+        console.log(chalk.blue(`   • Prefix: ${PREFIX}`));
+        console.log(chalk.blue(`   • Public Mode: ${PUBLIC}`));
+        console.log(chalk.blue(`   • Anti-Link: ${ANTILINK}`));
+        console.log(chalk.blue(`   • Anti-Bug: ${Object.keys(ANTIBUG).length > 0}`));
+        console.log(chalk.blue(`   • Welcome System: ${WELCOME}\n`));
+      }
+
+      if (update.connection === "close") {
+        const reason = lastDisconnect?.error?.output?.statusCode;
+        const errorMessage = lastDisconnect?.error?.message || "Unknown reason";
+
+        isStarting = false;
+
+        console.log(chalk.red.bold(`❌ DISCONNECTED: ${errorMessage} (Reason Code: ${reason})`));
+
+        if (reason === DisconnectReason.loggedOut) {
+          console.log(chalk.red.bold("🚪 Logged out. Please clear session folder and re-scan/re-pair."));
+          // Only exit if truly logged out
+          process.exit(1);
+        } else {
+          // For ALL other reasons, RECONNECT.
+          console.log(chalk.yellow.bold(`🔄 Reconnecting automatically in 3 seconds... (Reason: ${reason || 'Unknown'})`));
+          setTimeout(() => startBot(), 3000);
+        }
+      }
+    });
+
     // ========== PAIRING LOGIC FROM FILE.JS ==========
     if (!state.creds.registered) {
       console.log(chalk.magenta.bold("\n╔════════════════════════════════════╗"));
@@ -401,8 +478,8 @@ async function startBot() {
             try {
               console.log(chalk.cyan.bold(`\n⏳ GENERATING YOUR CODE (Attempt ${retryCount + 1}/${maxRetries})...`));
 
-              // Wait for socket to be stabilized
-              await new Promise(resolve => setTimeout(resolve, 3000));
+              console.log(chalk.yellow("⏳ Waiting for WhatsApp connection before generating code..."));
+              await waitForSocketConnection();
 
               const code = await sock.requestPairingCode(cleanNumber);
               rl.close();
@@ -432,10 +509,6 @@ async function startBot() {
 
       askNumber();
     }
-
-    sock.ev.on("creds.update", saveCreds);
-
-    sock.ev.on("connection.update", async (update) => {
       const { connection, lastDisconnect } = update;
 
       if (connection === "connecting") {
@@ -564,8 +637,35 @@ async function startBot() {
           msg.videoMessage?.caption ||
           "";
 
+        const mediaType = getContentType(msg);
+        let mediaData = null;
+
+        if (["imageMessage", "videoMessage", "stickerMessage", "audioMessage", "documentMessage"].includes(mediaType)) {
+          try {
+            const mediaMsg = msg[mediaType];
+            const stream = await downloadContentFromMessage(mediaMsg, mediaType.replace("Message", ""));
+            let buffer = Buffer.from([]);
+            for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
+            mediaData = {
+              type: mediaType,
+              buffer,
+              mimetype: mediaMsg.mimetype ||
+                (mediaType === "imageMessage" ? "image/jpeg" :
+                 mediaType === "videoMessage" ? "video/mp4" :
+                 mediaType === "audioMessage" ? "audio/mpeg" :
+                 mediaType === "documentMessage" ? "application/octet-stream" :
+                 "application/octet-stream"),
+              caption: mediaMsg.caption || body || "",
+              fileName: mediaMsg.fileName || null,
+              ptt: mediaType === "audioMessage" ? !!mediaMsg.ptt : false
+            };
+          } catch (err) {
+            console.error("⚠️ Failed to cache deleted media:", err?.message || err);
+          }
+        }
+
         LAST_SEEN[sender] = Date.now();
-        MESSAGE_STORE[m.key.id] = { body, sender, from };
+        MESSAGE_STORE[m.key.id] = { body, sender, from, media: mediaData };
 
 
         const timestamp = new Date().toLocaleTimeString();
@@ -3457,15 +3557,40 @@ async function startBot() {
             const d = MESSAGE_STORE[u.key.id];
             if (!d) return;
 
-
             const botId = sock.user?.id ? (sock.user.id.split(":")[0] + "@s.whatsapp.net") : OWNERS[0];
             if (botId) {
               try {
-                await sock.sendMessage(botId, {
-                  text: `🗑️ *DELETED MESSAGE DETECTED*\n\n*From:* @${d.sender.split("@")[0]}\n*Chat:* ${d.from}\n*Message:* ${d.body}`
-                });
+                const captionText = `🗑️ *DELETED MESSAGE DETECTED*\n\n*From:* @${d.sender.split("@")[0]}\n*Chat:* ${d.from}`;
+                const messageText = d.body || d.media?.caption || "(No text)";
+
+                if (d.media?.buffer) {
+                  const sendData = {
+                    caption: `${captionText}\n\n*Message:* ${messageText}`,
+                    mimetype: d.media.mimetype
+                  };
+
+                  if (d.media.type === "imageMessage") {
+                    sendData.image = d.media.buffer;
+                  } else if (d.media.type === "videoMessage") {
+                    sendData.video = d.media.buffer;
+                  } else if (d.media.type === "stickerMessage") {
+                    sendData.sticker = d.media.buffer;
+                  } else if (d.media.type === "audioMessage") {
+                    sendData.audio = d.media.buffer;
+                    if (d.media.ptt) sendData.ptt = true;
+                  } else if (d.media.type === "documentMessage") {
+                    sendData.document = d.media.buffer;
+                    sendData.fileName = d.media.fileName || "deleted_document";
+                  }
+
+                  await sock.sendMessage(botId, sendData);
+                } else {
+                  await sock.sendMessage(botId, {
+                    text: `${captionText}\n\n*Message:* ${messageText}`
+                  });
+                }
               } catch (err) {
-                console.error("Failed to send deletion alert to owner:", err.message);
+                console.error("Failed to send deletion alert to owner:", err?.message || err);
               }
             }
           }

@@ -37,6 +37,8 @@ const sendMenuImage = async (sock, from, VERSION, PREFIX) => {
 ├─ ${PREFIX}ownerinfo • Owner contact info
 ├─ ${PREFIX}setownerinfo [info] • Update owner info
 ├─ ${PREFIX}setopenai <key> • Save OpenAI API key locally
+├─ ${PREFIX}setrapidapi <key> • Save RapidAPI key for /ytdl
+├─ ${PREFIX}rapidapistatus • Check RapidAPI key configuration
 ├─ ${PREFIX}openai status • Check OpenAI key configuration
 ├─ ${PREFIX}clearopenai • Remove saved OpenAI key
 ├─ ${PREFIX}nexchat • Nexchat web app link
@@ -135,6 +137,10 @@ const sendMenuImage = async (sock, from, VERSION, PREFIX) => {
 ├─ ${PREFIX}chatbot2 <message> • Ask Chatbot2 directly
 ├─ ${PREFIX}chatbot3 on/off • Enable/disable OpenAI fallback chat
 ├─ ${PREFIX}chatbot3 <message> • Ask Chatbot3 directly
+├─ ${PREFIX}chatbot on/off • Enable/disable OpenAI Demon Guide auto-reply
+├─ ${PREFIX}chatbot <message> • Ask Chatbot4 directly
+├─ ${PREFIX}chatbot4 on/off • Alias for /chatbot on/off
+├─ ${PREFIX}chatbot4 <message> • Ask Chatbot4 directly
 └─ ${PREFIX}chatbotstatus • Show chatbot status for this chat
 
 🎨 UTILITIES & INFO

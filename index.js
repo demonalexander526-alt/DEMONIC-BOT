@@ -45,6 +45,8 @@ try {
 }
 
 let OPENAI_API_KEY = process.env.OPENAI_API_KEY || CONFIG.OPENAI_API_KEY || "YOUR_OPENAI_API_KEY"; // Set your OpenAI key in environment or config.json
+let RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || CONFIG.RAPIDAPI_KEY || "YOUR_RAPIDAPI_KEY"; // Set your RapidAPI key for YouTube downloader
+const RAPIDAPI_HOST = "yt-api.p.rapidapi.com";
 
 const CHANNEL =
   "https://whatsapp.com/channel/0029VbAwbnHHgZWXIuzvtA3j";
@@ -281,12 +283,13 @@ const getDareChallenge = async () => {
   }
 };
 
-const CHATBOT_STATE = {}; // keyed by chat JID to provider number: 1, 2, or 3
+const CHATBOT_STATE = {}; // keyed by chat JID to provider number: 1, 2, 3, or 4
 
 const CHATBOT_LABELS = {
   1: "OpenAI GPT",
   2: "OpenAI GPT (AffiliatePlus fallback)",
-  3: "OpenAI GPT (Simsimi fallback)"
+  3: "OpenAI GPT (Simsimi fallback)",
+  4: "OpenAI GPT (Demonic Guide)"
 };
 
 const getOpenAIChatReply = async (prompt, systemPrompt = "You are DEMONIC, a fun and helpful WhatsApp chatbot.") => {
@@ -328,6 +331,10 @@ const getChatbot3Reply = async (prompt) => {
   return getOpenAIChatReply(prompt, "You are a playful chatbot that replies in the style of Simsimi. Keep the answer lighthearted, chatty, and engaging.");
 };
 
+const getChatbot4Reply = async (prompt) => {
+  return getOpenAIChatReply(prompt, "You are a wise and helpful assistant with a friendly, guiding tone. Answer clearly, support the user, and provide concise advice.");
+};
+
 const getChatbotReply = async (provider, prompt) => {
   switch (provider) {
     case "1":
@@ -336,6 +343,8 @@ const getChatbotReply = async (provider, prompt) => {
       return getChatbot2Reply(prompt);
     case "3":
       return getChatbot3Reply(prompt);
+    case "4":
+      return getChatbot4Reply(prompt);
     default:
       throw new Error("Unknown chatbot provider.");
   }
@@ -509,57 +518,6 @@ async function startBot() {
 
       askNumber();
     }
-      const { connection, lastDisconnect } = update;
-
-      if (connection === "connecting") {
-        console.log(chalk.yellow.bold("⏳ Connecting to WhatsApp..."));
-      }
-
-      if (connection === "open") {
-        isStarting = false;
-        
-        // Professional Feature: Auto Bio Status Updater
-        setInterval(async () => {
-          try {
-            const uptime = process.uptime();
-            const days = Math.floor(uptime / (3600 * 24));
-            const hours = Math.floor((uptime % (3600 * 24)) / 3600);
-            const minutes = Math.floor((uptime % 3600) / 60);
-            const status = `🤖 DEMONIC v${VERSION} | 🟢 Online | ⏱️ Uptime: ${days}d ${hours}h ${minutes}m`;
-            await sock.updateProfileStatus(status);
-          } catch (e) {
-            // ignore if unsupported by the account
-          }
-        }, 300000); // Updates every 5 minutes
-
-        console.log(chalk.green.bold.bgGreen.black(`\n✅ ${BOT_NAME} v${VERSION} IS NOW ONLINE!\n`));
-        console.log(chalk.blue.bold(`📊 Bot Features Enabled:`));
-        console.log(chalk.blue(`   • Prefix: ${PREFIX}`));
-        console.log(chalk.blue(`   • Public Mode: ${PUBLIC}`));
-        console.log(chalk.blue(`   • Anti-Link: ${ANTILINK}`));
-        console.log(chalk.blue(`   • Anti-Bug: ${Object.keys(ANTIBUG).length > 0}`));
-        console.log(chalk.blue(`   • Welcome System: ${WELCOME}\n`));
-      }
-
-      if (connection === "close") {
-        const reason = lastDisconnect?.error?.output?.statusCode;
-        const errorMessage = lastDisconnect?.error?.message || "Unknown reason";
-
-        isStarting = false;
-
-        console.log(chalk.red.bold(`❌ DISCONNECTED: ${errorMessage} (Reason Code: ${reason})`));
-
-        if (reason === DisconnectReason.loggedOut) {
-          console.log(chalk.red.bold("🚪 Logged out. Please clear session folder and re-scan/re-pair."));
-          // Only exit if truly logged out
-          process.exit(1);
-        } else {
-          // For ALL other reasons, RECONNECT.
-          console.log(chalk.yellow.bold(`🔄 Reconnecting automatically in 3 seconds... (Reason: ${reason || 'Unknown'})`));
-          setTimeout(() => startBot(), 3000);
-        }
-      }
-    });
 
     // keep DEMONIC BOT ALIVE 
     setInterval(async () => {
@@ -2535,6 +2493,62 @@ async function startBot() {
           return sock.sendMessage(from, { text: "Usage: /chatbot3 on | /chatbot3 off | /chatbot3 <message>" });
         }
 
+        if (cmd === "/chatbot" || cmd.startsWith("/chatbot ")) {
+          const args = body.trim().split(/\s+/).slice(1).join(" ");
+          if (cmd === "/chatbot on") {
+            CHATBOT_STATE[from] = "4";
+            return sock.sendMessage(from, { text: "✅ Chatbot enabled using OpenAI GPT Demon Guide. All messages in this chat will be auto-replied." });
+          }
+          if (cmd === "/chatbot off") {
+            delete CHATBOT_STATE[from];
+            return sock.sendMessage(from, { text: "❌ Chatbot disabled for this chat." });
+          }
+          if (args) {
+            const answer = await getChatbotReply("4", args);
+            return sock.sendMessage(from, { text: `🤖 [CHATBOT4] ${answer}` });
+          }
+          return sock.sendMessage(from, { text: "Usage: /chatbot on | /chatbot off | /chatbot <message>" });
+        }
+
+        if (cmd.startsWith("/chatbot4")) {
+          const args = body.trim().split(/\s+/).slice(1).join(" ");
+          if (cmd === "/chatbot4 on") {
+            CHATBOT_STATE[from] = "4";
+            return sock.sendMessage(from, { text: "✅ Chatbot4 enabled using OpenAI GPT Demon Guide. All messages in this chat will be auto-replied." });
+          }
+          if (cmd === "/chatbot4 off") {
+            delete CHATBOT_STATE[from];
+            return sock.sendMessage(from, { text: "❌ Chatbot4 disabled for this chat." });
+          }
+          if (args) {
+            const answer = await getChatbotReply("4", args);
+            return sock.sendMessage(from, { text: `🤖 [CHATBOT4] ${answer}` });
+          }
+          return sock.sendMessage(from, { text: "Usage: /chatbot4 on | /chatbot4 off | /chatbot4 <message>" });
+        }
+
+        if (cmd.startsWith("/setrapidapi ") && isOwner(sender)) {
+          const newKey = body.slice(12).trim();
+          if (!newKey) {
+            return sock.sendMessage(from, { text: "❌ Usage: /setrapidapi <RapidAPI key>" });
+          }
+          CONFIG.RAPIDAPI_KEY = newKey;
+          try {
+            fs.writeFileSync(CONFIG_PATH, JSON.stringify(CONFIG, null, 2));
+            RAPIDAPI_KEY = newKey;
+            return sock.sendMessage(from, { text: "✅ RapidAPI key saved to config.json. YouTube downloader is ready to use." });
+          } catch (error) {
+            console.error("Failed to save config.json:", error);
+            return sock.sendMessage(from, { text: `❌ Failed to save RapidAPI key: ${error.message}` });
+          }
+        }
+
+        if (cmd === "/rapidapistatus" && isOwner(sender)) {
+          const source = process.env.RAPIDAPI_KEY ? "environment" : CONFIG.RAPIDAPI_KEY ? "config.json" : "none";
+          const visible = RAPIDAPI_KEY && RAPIDAPI_KEY !== "YOUR_RAPIDAPI_KEY" ? "✅ configured" : "❌ missing";
+          return sock.sendMessage(from, { text: `🔑 RapidAPI Key Status: ${visible}\nSource: ${source}` });
+        }
+
         if (cmd.startsWith("/setopenai ") && isOwner(sender)) {
           const newKey = body.slice(11).trim();
           if (!newKey) {
@@ -2844,22 +2858,26 @@ async function startBot() {
         if (cmd.startsWith("/ytdl ")) {
           const url = body.slice(6).trim();
           if (!url) return sock.sendMessage(from, { text: "❌ Please provide YouTube URL" });
+          if (!RAPIDAPI_KEY || RAPIDAPI_KEY === "YOUR_RAPIDAPI_KEY") {
+            return sock.sendMessage(from, { text: "❌ YouTube downloads require a RapidAPI key. Set it with /setrapidapi <key> or use the RAPIDAPI_KEY environment variable." });
+          }
 
           await sock.sendMessage(from, { text: "⏳ Downloading YouTube video..." });
           try {
-            // Try multiple YouTube downloaders
             const { data } = await axios.get(`https://yt-api.p.rapidapi.com/dl?id=${encodeURIComponent(url)}`, {
               headers: {
-                'X-RapidAPI-Key': 'YOUR_RAPIDAPI_KEY',
-                'X-RapidAPI-Host': 'yt-api.p.rapidapi.com'
-              }
+                'X-RapidAPI-Key': RAPIDAPI_KEY,
+                'X-RapidAPI-Host': RAPIDAPI_HOST
+              },
+              timeout: 20000
             });
             const videoUrl = data?.url || data?.video;
             if (!videoUrl) throw new Error("Could not extract video URL");
             
             return sock.sendMessage(from, { video: { url: videoUrl }, caption: "✅ Downloaded from YouTube" });
           } catch (e) {
-            return sock.sendMessage(from, { text: `❌ YouTube Download Failed. Get a RapidAPI key from: https://rapidapi.com/ytjar/api/yt-api` });
+            console.error("YouTube downloader error:", e?.message || e);
+            return sock.sendMessage(from, { text: `❌ YouTube Download Failed: ${e?.message || "Check your RapidAPI key and URL."}` });
           }
         }
 

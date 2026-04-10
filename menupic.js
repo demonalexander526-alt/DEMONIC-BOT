@@ -36,6 +36,9 @@ const sendMenuImage = async (sock, from, VERSION, PREFIX) => {
 ├─ ${PREFIX}change-name [name] • Change bot name
 ├─ ${PREFIX}ownerinfo • Owner contact info
 ├─ ${PREFIX}setownerinfo [info] • Update owner info
+├─ ${PREFIX}setopenai <key> • Save OpenAI API key locally
+├─ ${PREFIX}openai status • Check OpenAI key configuration
+├─ ${PREFIX}clearopenai • Remove saved OpenAI key
 ├─ ${PREFIX}nexchat • Nexchat web app link
 ├─ ${PREFIX}links • Community links
 └─ ${PREFIX}broadcast [msg] • Send to all groups

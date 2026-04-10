@@ -33,7 +33,18 @@ const BOT_NAME = "DEMONIC";
 const VERSION = "1.0.0";
 const GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"; // Get your free key at https://aistudio.google.com
 const VIRUSTOTAL_API_KEY = "YOUR_VIRUSTOTAL_API_KEY"; // Get free key at https://www.virustotal.com/gui/join-us
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "YOUR_OPENAI_API_KEY"; // Set your OpenAI key in environment or replace the placeholder
+
+const CONFIG_PATH = path.join(__dirname, "config.json");
+let CONFIG = {};
+try {
+  if (fs.existsSync(CONFIG_PATH)) {
+    CONFIG = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8") || "{}");
+  }
+} catch (err) {
+  console.warn("⚠️ Could not read config.json:", err.message);
+}
+
+let OPENAI_API_KEY = process.env.OPENAI_API_KEY || CONFIG.OPENAI_API_KEY || "YOUR_OPENAI_API_KEY"; // Set your OpenAI key in environment or config.json
 
 const CHANNEL =
   "https://whatsapp.com/channel/0029VbAwbnHHgZWXIuzvtA3j";
@@ -2422,6 +2433,40 @@ async function startBot() {
             return sock.sendMessage(from, { text: `🤖 [CHATBOT3] ${answer}` });
           }
           return sock.sendMessage(from, { text: "Usage: /chatbot3 on | /chatbot3 off | /chatbot3 <message>" });
+        }
+
+        if (cmd.startsWith("/setopenai ") && isOwner(sender)) {
+          const newKey = body.slice(11).trim();
+          if (!newKey) {
+            return sock.sendMessage(from, { text: "❌ Usage: /setopenai <OpenAI API key>" });
+          }
+          CONFIG.OPENAI_API_KEY = newKey;
+          try {
+            fs.writeFileSync(CONFIG_PATH, JSON.stringify(CONFIG, null, 2));
+            OPENAI_API_KEY = newKey;
+            return sock.sendMessage(from, { text: "✅ OpenAI API key saved to config.json. Chatbot is ready to use." });
+          } catch (error) {
+            console.error("Failed to save config.json:", error);
+            return sock.sendMessage(from, { text: `❌ Failed to save API key: ${error.message}` });
+          }
+        }
+
+        if (cmd === "/openai status" && isOwner(sender)) {
+          const source = process.env.OPENAI_API_KEY ? "environment" : CONFIG.OPENAI_API_KEY ? "config.json" : "none";
+          const visible = OPENAI_API_KEY && OPENAI_API_KEY !== "YOUR_OPENAI_API_KEY" ? "✅ configured" : "❌ missing";
+          return sock.sendMessage(from, { text: `🧠 OpenAI Key Status: ${visible}\nSource: ${source}` });
+        }
+
+        if (cmd.startsWith("/clearopenai") && isOwner(sender)) {
+          delete CONFIG.OPENAI_API_KEY;
+          try {
+            fs.writeFileSync(CONFIG_PATH, JSON.stringify(CONFIG, null, 2));
+            OPENAI_API_KEY = process.env.OPENAI_API_KEY || "YOUR_OPENAI_API_KEY";
+            return sock.sendMessage(from, { text: "✅ OpenAI API key cleared from config.json." });
+          } catch (error) {
+            console.error("Failed to save config.json:", error);
+            return sock.sendMessage(from, { text: `❌ Failed to clear API key: ${error.message}` });
+          }
         }
 
         if (cmd === "/chatbotstatus") {

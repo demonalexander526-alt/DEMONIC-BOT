@@ -63,6 +63,7 @@ const sendMenuImage = async (sock, from, VERSION, PREFIX) => {
 ├─ ${PREFIX}anticall on/off • Block calls
 ├─ ${PREFIX}autotyping on/off • Auto typing presence
 ├─ ${PREFIX}autorecording on/off • Auto recording presence
+├─ ${PREFIX}autorecordtyping on/off • Auto typing + recording presence
 ├─ ${PREFIX}autoreact on/off • Save emoji reactions
 └─ ${PREFIX}welcome on/off • Join message
 
@@ -123,6 +124,15 @@ const sendMenuImage = async (sock, from, VERSION, PREFIX) => {
 ├─ ${PREFIX}lowercase [text] • lowercase (+5 pts)
 ├─ ${PREFIX}myscore • Show your score
 └─ ${PREFIX}topscores • Top 10 players
+
+🤖 CHATBOT
+├─ ${PREFIX}chatbot1 on/off • Enable/disable OpenAI GPT auto-reply
+├─ ${PREFIX}chatbot1 <message> • Ask Chatbot1 directly
+├─ ${PREFIX}chatbot2 on/off • Enable/disable OpenAI fallback chat
+├─ ${PREFIX}chatbot2 <message> • Ask Chatbot2 directly
+├─ ${PREFIX}chatbot3 on/off • Enable/disable OpenAI fallback chat
+├─ ${PREFIX}chatbot3 <message> • Ask Chatbot3 directly
+└─ ${PREFIX}chatbotstatus • Show chatbot status for this chat
 
 🎨 UTILITIES & INFO
 ├─ ${PREFIX}cat • Random cat image

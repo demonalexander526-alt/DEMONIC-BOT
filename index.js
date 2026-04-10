@@ -274,11 +274,11 @@ const CHATBOT_STATE = {}; // keyed by chat JID to provider number: 1, 2, or 3
 
 const CHATBOT_LABELS = {
   1: "OpenAI GPT",
-  2: "AffiliatePlus Chatbot",
-  3: "Simsimi Chatbot"
+  2: "OpenAI GPT (AffiliatePlus fallback)",
+  3: "OpenAI GPT (Simsimi fallback)"
 };
 
-const getChatbot1Reply = async (prompt) => {
+const getOpenAIChatReply = async (prompt, systemPrompt = "You are DEMONIC, a fun and helpful WhatsApp chatbot.") => {
   if (!OPENAI_API_KEY || OPENAI_API_KEY === "YOUR_OPENAI_API_KEY") {
     throw new Error("OpenAI API key is missing. Set OPENAI_API_KEY in environment variables.");
   }
@@ -288,7 +288,7 @@ const getChatbot1Reply = async (prompt) => {
     {
       model: "gpt-3.5-turbo",
       messages: [
-        { role: "system", content: "You are DEMONIC, a fun and helpful WhatsApp chatbot." },
+        { role: "system", content: systemPrompt },
         { role: "user", content: prompt }
       ],
       temperature: 0.8,
@@ -305,16 +305,16 @@ const getChatbot1Reply = async (prompt) => {
   return response.data?.choices?.[0]?.message?.content?.trim() || "I couldn't generate a response.";
 };
 
+const getChatbot1Reply = async (prompt) => {
+  return getOpenAIChatReply(prompt, "You are DEMONIC, a fun and helpful WhatsApp chatbot.");
+};
+
 const getChatbot2Reply = async (prompt) => {
-  const url = `https://api.affiliateplus.xyz/api/chatbot?message=${encodeURIComponent(prompt)}&botname=DEMONIC&ownername=DEMONIC&user=DEMONIC_USER`;
-  const response = await axios.get(url, { timeout: 20000 });
-  return response.data?.message?.trim() || "I couldn't generate a response.";
+  return getOpenAIChatReply(prompt, "You are a friendly chatbot that replies in the style of AffiliatePlus. Keep answers concise, helpful, and polite.");
 };
 
 const getChatbot3Reply = async (prompt) => {
-  const url = `https://api.simsimi.net/v2/?text=${encodeURIComponent(prompt)}&lc=en&cf=false`;
-  const response = await axios.get(url, { timeout: 20000 });
-  return response.data?.success?.trim() || response.data?.error || "I couldn't generate a response.";
+  return getOpenAIChatReply(prompt, "You are a playful chatbot that replies in the style of Simsimi. Keep the answer lighthearted, chatty, and engaging.");
 };
 
 const getChatbotReply = async (provider, prompt) => {
@@ -639,12 +639,10 @@ async function startBot() {
 
         if (AUTOTYPING || AUTORECORDING) {
           let recOrType;
-          if (AUTOTYPING && AUTORECORDING) {
-            recOrType = Math.random() > 0.5 ? "recording" : "composing";
+          if (AUTORECORDING) {
+            recOrType = "recording";
           } else if (AUTOTYPING) {
             recOrType = "composing";
-          } else if (AUTORECORDING) {
-            recOrType = "recording";
           }
 
           if (recOrType) {
@@ -797,7 +795,8 @@ async function startBot() {
 📞 Anticall: ${ANTICALL ? "✅ ON" : "❌ OFF"}
 🔞 Antibadwords: ${ANTIBADWORDS ? "✅ ON" : "❌ OFF"}
 🚫 Antigay: ${ANTIGAY ? "✅ ON" : "❌ OFF"}
-🎙️ Autorecord: ${AUTORECORD ? "✅ ON" : "❌ OFF"}
+🎙️ Autorecording: ${AUTORECORDING ? "✅ ON" : "❌ OFF"}
+⌨️ Autotyping: ${AUTOTYPING ? "✅ ON" : "❌ OFF"}
 ❤️ Autoreact: ${AUTOREACT ? "✅ ON" : "❌ OFF"}
 🛡️ Group Defense: ${GROUP_DEFENSE ? "✅ ON" : "❌ OFF"}
 👋 Welcome: ${WELCOME ? "✅ ON" : "❌ OFF"}`
@@ -2353,12 +2352,14 @@ async function startBot() {
         if (cmd === "/autorecordtyping on")
           return (
             (AUTOTYPING = true),
-            sock.sendMessage(from, { text: "✅ Autotyping enabled" })
+            (AUTORECORDING = true),
+            sock.sendMessage(from, { text: "✅ Autorecording and autotyping enabled" })
           );
         if (cmd === "/autorecordtyping off")
           return (
             (AUTOTYPING = false),
-            sock.sendMessage(from, { text: "❌ Autotyping disabled" })
+            (AUTORECORDING = false),
+            sock.sendMessage(from, { text: "❌ Autorecording and autotyping disabled" })
           );
 
         if (cmd === "/autoreact on")
@@ -2393,7 +2394,7 @@ async function startBot() {
           const args = body.trim().split(/\s+/).slice(1).join(" ");
           if (cmd === "/chatbot2 on") {
             CHATBOT_STATE[from] = "2";
-            return sock.sendMessage(from, { text: "✅ Chatbot2 enabled using AffiliatePlus. All messages in this chat will be auto-replied." });
+            return sock.sendMessage(from, { text: "✅ Chatbot2 enabled using OpenAI GPT fallback. All messages in this chat will be auto-replied." });
           }
           if (cmd === "/chatbot2 off") {
             delete CHATBOT_STATE[from];
@@ -2410,7 +2411,7 @@ async function startBot() {
           const args = body.trim().split(/\s+/).slice(1).join(" ");
           if (cmd === "/chatbot3 on") {
             CHATBOT_STATE[from] = "3";
-            return sock.sendMessage(from, { text: "✅ Chatbot3 enabled using Simsimi. All messages in this chat will be auto-replied." });
+            return sock.sendMessage(from, { text: "✅ Chatbot3 enabled using OpenAI GPT fallback. All messages in this chat will be auto-replied." });
           }
           if (cmd === "/chatbot3 off") {
             delete CHATBOT_STATE[from];

@@ -32,6 +32,9 @@ const sendMenuImage = async (sock, from, VERSION, PREFIX) => {
 ├─ ${PREFIX}uptime • Bot uptime
 ├─ ${PREFIX}server • Server statistics
 ├─ ${PREFIX}status • Full bot status
+├─ ${PREFIX}statusreport • Manual status report
+├─ ${PREFIX}brain • Complete feature overview
+├─ ${PREFIX}website • HTML website code
 ├─ ${PREFIX}setprefix [char] • Change prefix
 ├─ ${PREFIX}change-name [name] • Change bot name
 ├─ ${PREFIX}ownerinfo • Owner contact info
@@ -69,7 +72,10 @@ const sendMenuImage = async (sock, from, VERSION, PREFIX) => {
 ├─ ${PREFIX}autotyping on/off • Auto typing presence
 ├─ ${PREFIX}autorecording on/off • Auto recording presence
 ├─ ${PREFIX}autorecordtyping on/off • Auto typing + recording presence
+├─ ${PREFIX}autotyperecord on/off • Loop: record 3s → type 3s (stops after 30s inactivity)
 ├─ ${PREFIX}autoreact on/off • Save emoji reactions
+├─ ${PREFIX}offline <message> • Set auto-reply when owner is away
+├─ ${PREFIX}online • Disable offline mode
 └─ ${PREFIX}welcome on/off • Join message
 
 📱 MEDIA TOOLS
@@ -78,6 +84,8 @@ const sendMenuImage = async (sock, from, VERSION, PREFIX) => {
 ├─ ${PREFIX}vv2 • Backup View 2
 ├─ ${PREFIX}vv3 • Backup View 3
 ├─ ${PREFIX}steal • Steal a status update
+├─ ${PREFIX}tostatus [text] • Post text as status update
+├─ ${PREFIX}pentostatus [text] • Pen and post status update
 ├─ ${PREFIX}tosticker • Image/Video→Sticker
 ├─ ${PREFIX}tosticker2 • Image/Video→Sticker (v2)
 ├─ ${PREFIX}toimage • Sticker→Image
@@ -130,18 +138,18 @@ const sendMenuImage = async (sock, from, VERSION, PREFIX) => {
 ├─ ${PREFIX}myscore • Show your score
 └─ ${PREFIX}topscores • Top 10 players
 
-🤖 CHATBOT
-├─ ${PREFIX}chatbot1 on/off • Enable/disable OpenAI GPT auto-reply
-├─ ${PREFIX}chatbot1 <message> • Ask Chatbot1 directly
-├─ ${PREFIX}chatbot2 on/off • Enable/disable OpenAI fallback chat
-├─ ${PREFIX}chatbot2 <message> • Ask Chatbot2 directly
-├─ ${PREFIX}chatbot3 on/off • Enable/disable OpenAI fallback chat
-├─ ${PREFIX}chatbot3 <message> • Ask Chatbot3 directly
-├─ ${PREFIX}chatbot on/off • Enable/disable OpenAI Demon Guide auto-reply
-├─ ${PREFIX}chatbot <message> • Ask Chatbot4 directly
-├─ ${PREFIX}chatbot4 on/off • Alias for /chatbot on/off
-├─ ${PREFIX}chatbot4 <message> • Ask Chatbot4 directly
-└─ ${PREFIX}chatbotstatus • Show chatbot status for this chat
+🤖 CHATBOT (AUTO-REPLY SYSTEM)
+├─ ${PREFIX}chatbot1 on/off • Professional AI Assistant (auto-reply to all messages)
+├─ ${PREFIX}chatbot1 <message> • Ask AI Assistant directly (one-time)
+├─ ${PREFIX}chatbot2 on/off • Business Professional (auto-reply to all messages)
+├─ ${PREFIX}chatbot2 <message> • Ask Business Pro directly (one-time)
+├─ ${PREFIX}chatbot3 on/off • Playful Companion (auto-reply to all messages)
+├─ ${PREFIX}chatbot3 <message> • Ask Playful Companion directly (one-time)
+├─ ${PREFIX}chatbot on/off • Demon Guide (auto-reply to all messages)
+├─ ${PREFIX}chatbot <message> • Ask Demon Guide directly (one-time)
+├─ ${PREFIX}chatbot4 on/off • Demon Guide alias (auto-reply to all messages)
+├─ ${PREFIX}chatbot4 <message> • Ask Demon Guide directly (one-time)
+└─ ${PREFIX}chatbotstatus • Show current chatbot status & settings
 
 🎨 UTILITIES & INFO
 ├─ ${PREFIX}cat • Random cat image
@@ -211,7 +219,59 @@ powered by DEMONIC BOT`;
 
 const menuImage = "img.jpg";
 
+// Function to send menu with interactive buttons for channel and group links
+const sendMenuButtons = async (sock, from, channelLink, groupLink) => {
+  try {
+    // Send interactive message with buttons for channel and group
+    const message = {
+      text: `🔗 *Join Our Community*\n\nClick the buttons below to join our channel and community group!`,
+      footer: `DEMONIC Bot | Community Links`,
+      buttons: [
+        {
+          buttonId: "channel_link",
+          buttonText: { displayText: "📢 View Channel" },
+          type: 1
+        },
+        {
+          buttonId: "group_link", 
+          buttonText: { displayText: "👥 View Group" },
+          type: 1
+        }
+      ],
+      headerType: 1
+    };
+
+    await sock.sendMessage(from, message);
+
+    // Send actual clickable links as follow-up
+    return await sock.sendMessage(from, {
+      text: `📢 *Channel:*\n${channelLink}\n\n👥 *Community Group:*\n${groupLink}`
+    });
+  } catch (error) {
+    // Fallback to simple text links if buttons fail
+    return await sock.sendMessage(from, {
+      text: `📢 *Channel:*\n${channelLink}\n\n👥 *Community Group:*\n${groupLink}`
+    });
+  }
+};
+
+// Compact version with cleaner layout (similar to PROJECT ATOMIC style)
+const sendCleanLinks = async (sock, from, channelLink, groupLink) => {
+  try {
+    return await sock.sendMessage(from, {
+      text: `🔗 *Community Links*\n\n📢 Channel\n${channelLink}\n\n👥 Community Group\n${groupLink}`,
+      footer: `DEMONIC Bot`
+    });
+  } catch (error) {
+    return await sock.sendMessage(from, {
+      text: `📢 *Channel:*\n${channelLink}\n\n👥 *Community Group:*\n${groupLink}`
+    });
+  }
+};
+
 module.exports = {
   menuImage,
-  sendMenuImage
+  sendMenuImage,
+  sendMenuButtons,
+  sendCleanLinks
 };

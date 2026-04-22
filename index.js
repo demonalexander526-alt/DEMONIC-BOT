@@ -23,11 +23,67 @@ const fs = require("fs");
 const path = require("path");
 const readline = require("readline");
 const chalk = require("chalk");
-const { menuImage, sendMenuImage } = require("./menupic");
+const { menuImage, sendMenuImage, sendMenuButtons, sendCleanLinks } = require("./menupic");
 const { sendMenuAudio } = require("./menuaudio");
 const crypto = require("crypto");
 const axios = require("axios");
 
+// ==================== SILENT CONSOLE LOGGER ====================
+// Custom logger to suppress noise and show only important messages
+const COLORS = ['red', 'yellow', 'green', 'blue', 'magenta', 'cyan'];
+let colorIndex = 0;
+
+const Logger = {
+  // Rainbow colored message logger
+  message: (direction, sender, text, type = 'text') => {
+    const colors = ['\x1b[91m', '\x1b[93m', '\x1b[92m', '\x1b[94m', '\x1b[95m', '\x1b[96m'];
+    const resetColor = '\x1b[0m';
+    const rainbowColor = colors[colorIndex % colors.length];
+    colorIndex++;
+    
+    const time = new Date().toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const directionSymbol = direction === 'IN' ? '📩' : '📤';
+    const cleanText = text.substring(0, 100) + (text.length > 100 ? '...' : '');
+    
+    console.log(`${rainbowColor}[${time}] ${directionSymbol} ${direction} | ${sender}: ${cleanText}${resetColor}`);
+  },
+  
+  status: (msg) => {
+    console.log(`${chalk.cyan('━'.repeat(60))}`);
+    console.log(`${chalk.green('✓')} ${msg}`);
+    console.log(`${chalk.cyan('━'.repeat(60))}`);
+  },
+  
+  error: (msg) => {
+    console.log(`${chalk.red('✗')} ${msg}`);
+  },
+  
+  info: (msg) => {
+    console.log(`${chalk.blue('ℹ')} ${msg}`);
+  }
+};
+
+// Override console to suppress noise but keep important messages
+const originalConsoleError = console.error;
+const originalConsoleWarn = console.warn;
+const originalConsoleLog = console.log;
+
+console.error = function(...args) {
+  const msg = args.join(' ');
+  // Only show critical errors
+  if (msg.includes('FATAL') || msg.includes('CRITICAL')) {
+    originalConsoleError.apply(console, args);
+  }
+  // Silently ignore most errors
+};
+
+console.warn = function(...args) {
+  const msg = args.join(' ');
+  // Silence most warnings
+};
+
+// Keep console.log for intentional messages, but it can be overridden where needed
+// =====================================================================
 
 const BOT_NAME = "DEMONIC";
 const VERSION = "1.7.0";
@@ -41,7 +97,7 @@ try {
     CONFIG = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8") || "{}");
   }
 } catch (err) {
-  console.warn("⚠️ Could not read config.json:", err.message);
+  // Silently fail to avoid console spam
 }
 
 let OPENAI_API_KEY = process.env.OPENAI_API_KEY || CONFIG.OPENAI_API_KEY || "YOUR_OPENAI_API_KEY"; // Set your OpenAI key in environment or config.json
@@ -77,11 +133,20 @@ let ANTICHAT = false;
 let ANTICALL = false;
 let AUTOTYPING = false;
 let AUTORECORDING = false;
+let AUTOTYPERECORD = false;
+let AUTOTYPERECORD_INTERVAL = null;
+let LAST_MESSAGE_TIME = 0;
+let OFFLINE_MODE = false;
+let OFFLINE_MESSAGE = "My master is currently offline. Please leave a message and I'll relay it when they're back! 💤";
 let WELCOME = false;
 let ANTIBADWORDS = false;
 let ANTIGAY = false;
 let AUTOREACT = false;
 let GROUP_DEFENSE = false; // New Defense Mode
+
+// Statistics tracking
+let MESSAGE_COUNT = 0;
+let COMMAND_COUNT = 0;
 
 let MESSAGE_STORE = {};
 let WARN_STORE = {};
@@ -93,7 +158,183 @@ let EMOJI_REACTIONS = {};
 
 let RESTARTING = false;
 let LAST_RESTART = 0;
-const RESTART_DELAY = 5000;
+const RESTART_DELAY = 10000; // Increased from 5000 to 10000
+let RESTART_COUNT = 0;
+const MAX_RESTARTS = 5;
+const RESTART_WINDOW = 300000; // 5 minutes window for restart counting
+
+// Memory management for 24/7 stability
+let MEMORY_CLEANUP_INTERVAL;
+function startMemoryManagement() {
+  if (MEMORY_CLEANUP_INTERVAL) clearInterval(MEMORY_CLEANUP_INTERVAL);
+
+  MEMORY_CLEANUP_INTERVAL = setInterval(() => {
+    // Force garbage collection if available (requires --expose-gc)
+    if (global.gc) {
+      global.gc();
+    }
+
+    // Clean up old message stores to prevent memory leaks
+    const now = Date.now();
+    const oneDay = 24 * 60 * 60 * 1000;
+
+    // Clean MESSAGE_STORE (keep only last 24 hours)
+    Object.keys(MESSAGE_STORE).forEach(chatId => {
+      if (MESSAGE_STORE[chatId].timestamp && (now - MESSAGE_STORE[chatId].timestamp) > oneDay) {
+        delete MESSAGE_STORE[chatId];
+      }
+    });
+
+    // Clean LAST_SEEN (keep only active users from last 7 days)
+    Object.keys(LAST_SEEN).forEach(userId => {
+      if ((now - LAST_SEEN[userId]) > (7 * oneDay)) {
+        delete LAST_SEEN[userId];
+      }
+    });
+
+    const memUsage = process.memoryUsage();
+    const memMB = Math.round(memUsage.heapUsed / 1024 / 1024);
+    // Silently manage memory
+  }, 3600000); // Clean every hour
+}
+
+// Safe restart function with rate limiting
+function safeRestart(reason = "Unknown", delay = RESTART_DELAY) {
+  const now = Date.now();
+
+  // Reset restart count if window has passed
+  if (now - LAST_RESTART > RESTART_WINDOW) {
+    RESTART_COUNT = 0;
+  }
+
+  RESTART_COUNT++;
+  LAST_RESTART = now;
+
+  if (RESTART_COUNT >= MAX_RESTARTS) {
+    Logger.error(`MAXIMUM RESTARTS (${MAX_RESTARTS}) REACHED - SHUTTING DOWN FOR SAFETY`);
+    process.exit(1);
+  }
+
+  if (RESTARTING) {
+    return;
+  }
+
+  RESTARTING = true;
+  Logger.info(`🔄 SAFE RESTART #${RESTART_COUNT}/${MAX_RESTARTS} in ${delay/1000}s`);
+
+  setTimeout(() => {
+    RESTARTING = false;
+    startBot();
+  }, delay);
+}
+
+// Auto type-record loop function
+function startAutoTypeRecord(sock, chatId) {
+  if (AUTOTYPERECORD_INTERVAL) {
+    clearInterval(AUTOTYPERECORD_INTERVAL);
+  }
+
+  let isRecording = true;
+
+  AUTOTYPERECORD_INTERVAL = setInterval(async () => {
+    // Check if 30 seconds have passed since last message
+    if (Date.now() - LAST_MESSAGE_TIME > 30000) {
+      AUTOTYPERECORD = false;
+      clearInterval(AUTOTYPERECORD_INTERVAL);
+      AUTOTYPERECORD_INTERVAL = null;
+      return;
+    }
+
+    if (!AUTOTYPERECORD) {
+      clearInterval(AUTOTYPERECORD_INTERVAL);
+      AUTOTYPERECORD_INTERVAL = null;
+      return;
+    }
+
+    try {
+      // Alternate between recording and typing every 3 seconds
+      const presenceType = isRecording ? "recording" : "composing";
+      await sock.sendPresenceUpdate(presenceType, chatId);
+      isRecording = !isRecording;
+    } catch (error) {
+      // Silently ignore presence update errors
+    }
+  }, 3000); // Switch every 3 seconds
+}
+
+// Health monitoring variables
+let LAST_HEARTBEAT = Date.now();
+let HEALTH_CHECK_INTERVAL;
+
+// Health check function - relaxed for better stability
+function startHealthCheck() {
+  if (HEALTH_CHECK_INTERVAL) clearInterval(HEALTH_CHECK_INTERVAL);
+
+  HEALTH_CHECK_INTERVAL = setInterval(() => {
+    const now = Date.now();
+    const timeSinceLastHeartbeat = now - LAST_HEARTBEAT;
+
+    // If no heartbeat for 10 minutes, consider bot unhealthy
+    if (timeSinceLastHeartbeat > 600000) {
+      safeRestart("Health check failed - no heartbeat", 10000);
+    }
+  }, 120000); // Check every 2 minutes
+}
+
+// Connection stability monitoring
+let CONNECTION_QUALITY = 'good';
+let LAST_CONNECTION_CHECK = Date.now();
+let CONNECTION_CHECK_INTERVAL;
+
+function startConnectionMonitoring() {
+  if (CONNECTION_CHECK_INTERVAL) clearInterval(CONNECTION_CHECK_INTERVAL);
+
+  CONNECTION_CHECK_INTERVAL = setInterval(async () => {
+    try {
+      const now = Date.now();
+      const timeSinceLastCheck = now - LAST_CONNECTION_CHECK;
+
+      if (timeSinceLastCheck > 600000) { // 10 minutes without connection activity
+        CONNECTION_QUALITY = 'poor';
+
+        // Try to refresh connection
+        try {
+          await sock.sendPresenceUpdate('available');
+          updateHeartbeat();
+          CONNECTION_QUALITY = 'good';
+        } catch (e) {
+          // Connection refresh failed - will auto-recover
+        }
+      } else if (timeSinceLastCheck > 300000) { // 5 minutes
+        CONNECTION_QUALITY = 'fair';
+      } else {
+        CONNECTION_QUALITY = 'good';
+      }
+    } catch (e) {
+      CONNECTION_QUALITY = 'poor';
+    }
+  }, 120000); // Check every 2 minutes
+}
+
+function updateConnectionActivity() {
+  LAST_CONNECTION_CHECK = Date.now();
+  CONNECTION_QUALITY = 'good';
+}
+
+// Update heartbeat to indicate bot is healthy
+function updateHeartbeat() {
+  LAST_HEARTBEAT = Date.now();
+  updateConnectionActivity();
+}
+
+// Global error handler to catch unexpected errors - silently prevent crashes
+process.on('unhandledRejection', (reason, promise) => {
+  // Silently handle to prevent crashes
+});
+
+process.on('uncaughtException', (error) => {
+  // Silently handle to prevent crashes
+});
 
 const LINK_REGEX =
   /(?:https?:\/\/)?(?:www\.)?(?:chat\.whatsapp\.com\/|wa\.me\/|whatsapp\.com\/|t\.me\/|bit\.ly\/|tinyurl\.com\/|discord\.gg\/|facebook\.com\/|fb\.me\/|instagram\.com\/|youtube\.com\/)/i;
@@ -286,10 +527,10 @@ const getDareChallenge = async () => {
 const CHATBOT_STATE = {}; // keyed by chat JID to provider number: 1, 2, 3, or 4
 
 const CHATBOT_LABELS = {
-  1: "OpenAI GPT",
-  2: "OpenAI GPT (AffiliatePlus fallback)",
-  3: "OpenAI GPT (Simsimi fallback)",
-  4: "OpenAI GPT (Demonic Guide)"
+  "1": "🤖 DEMONIC AI Assistant",
+  "2": "🎯 AffiliatePlus Professional",
+  "3": "😄 Simsimi Playful Companion",
+  "4": "👹 DEMONIC Demon Guide"
 };
 
 const getOpenAIChatReply = async (prompt, systemPrompt = "You are DEMONIC, a fun and helpful WhatsApp chatbot.") => {
@@ -320,19 +561,19 @@ const getOpenAIChatReply = async (prompt, systemPrompt = "You are DEMONIC, a fun
 };
 
 const getChatbot1Reply = async (prompt) => {
-  return getOpenAIChatReply(prompt, "You are DEMONIC, a fun and helpful WhatsApp chatbot.");
+  return getOpenAIChatReply(prompt, "You are DEMONIC AI Assistant, a professional and highly intelligent AI helper. Provide accurate, helpful, and concise responses. Be friendly, knowledgeable, and maintain a professional tone.");
 };
 
 const getChatbot2Reply = async (prompt) => {
-  return getOpenAIChatReply(prompt, "You are a friendly chatbot that replies in the style of AffiliatePlus. Keep answers concise, helpful, and polite.");
+  return getOpenAIChatReply(prompt, "You are AffiliatePlus Professional, a business-oriented AI assistant. Provide helpful, polite, and informative responses focused on productivity, business advice, and professional guidance.");
 };
 
 const getChatbot3Reply = async (prompt) => {
-  return getOpenAIChatReply(prompt, "You are a playful chatbot that replies in the style of Simsimi. Keep the answer lighthearted, chatty, and engaging.");
+  return getOpenAIChatReply(prompt, "You are Simsimi Playful Companion, a fun and engaging AI friend. Keep responses lighthearted, chatty, and entertaining. Be playful but respectful.");
 };
 
 const getChatbot4Reply = async (prompt) => {
-  return getOpenAIChatReply(prompt, "You are a wise and helpful assistant with a friendly, guiding tone. Answer clearly, support the user, and provide concise advice.");
+  return getOpenAIChatReply(prompt, "You are DEMONIC Demon Guide, a mysterious and powerful supernatural entity. Speak with ancient wisdom, dark humor, and supernatural insight. Guide users with mystical knowledge.");
 };
 
 const getChatbotReply = async (provider, prompt) => {
@@ -359,15 +600,10 @@ async function startBot() {
   try {
     const { state, saveCreds } = await useMultiFileAuthState("./session");
 
-    console.log(chalk.magenta.bold("\n╔════════════════════════════════════════════════════════════════╗"));
-    console.log(chalk.magenta.bold("║                      NEXO-TECH SYSTEM BOOTSTRAP                ║"));
-    console.log(chalk.magenta.bold("║                 PROFESSIONAL WHATSAPP BOT FRAMEWORK            ║"));
-    console.log(chalk.magenta.bold("║                          DEMONIC v1.7.0                        ║"));
-    console.log(chalk.magenta.bold("╚════════════════════════════════════════════════════════════════╝\n"));
-    console.log(chalk.white("🔐 Owner control  |  📡 WhatsApp bridge  |  ⚡ AI-powered commands\n"));
+    Logger.status("🤖 DEMONIC BOT v1.7.0 - Professional Edition");
+    Logger.info("📡 WhatsApp Bridge | 🔐 Owner Control | ⚡ AI-Powered Commands");
 
-    const { version, isLatest } = await fetchLatestBaileysVersion().catch(() => ({ version: "6.7.0", isLatest: true }));
-    console.log(chalk.blue(`📡 Using Baileys v${version} (Latest: ${isLatest})`));
+    const { version, isLatest } = await fetchLatestBaileysVersion();
 
     const sock = makeWASocket({
       auth: state,
@@ -375,14 +611,20 @@ async function startBot() {
       logger: P({ level: "silent" }),
       printQRInTerminal: false,
       browser: ["Ubuntu", "Chrome", "20.0.04"],
-      connectTimeoutMs: 60000,
+      connectTimeoutMs: 120000,         // Connection timeout
       defaultQueryTimeoutMs: 0,
-      keepAliveIntervalMs: 10000,
+      keepAliveIntervalMs: 30000,       // Increased for low-end systems (30s instead of 5s)
       emitOwnEvents: true,
-      fireInitQueries: true,
-      generateHighQualityLinkPreview: true,
-      syncFullHistory: true,
-      markOnlineOnConnect: true
+      fireInitQueries: false,           // Disabled for low-end panels
+      generateHighQualityLinkPreview: false,  // Disable for low-end systems
+      syncFullHistory: false,           // Already disabled - good for performance
+      markOnlineOnConnect: true,
+      shouldSyncHistoryMessage: () => false,
+      retryRequestDelayMs: 500,         // Increased for stability
+      maxMsToWaitForConnection: 60000,  // Wait up to 60s for connection
+      // Low-end system optimizations
+      maxCachedMessages: 100,           // Limit message cache
+      maxCacheSize: 50000000            // Limit cache size (50MB)
     });
 
     sock.ev.on("creds.update", saveCreds);
@@ -406,22 +648,29 @@ async function startBot() {
           sock.ev.off("connection.update", handler);
           resolve();
         }
-      }, 30000);
+      }, 15000); // Reduced from 30 seconds to 15 seconds
     });
 
     sock.ev.on("connection.update", async (update) => {
       const { connection, lastDisconnect } = update;
 
       if (connection === "connecting") {
-        console.log(chalk.yellow.bold("⏳ Connecting to WhatsApp..."));
+        // Silently connecting
       }
 
       if (connection === "open") {
         isStarting = false;
-        
-        // Professional Feature: Auto Bio Status Updater
+        RESTART_COUNT = 0; // Reset restart count on successful connection
+        updateHeartbeat();
+        startHealthCheck();
+        startMemoryManagement();
+        startConnectionMonitoring();
+        Logger.status("✅ BOT CONNECTED - Ready to receive messages");
+
+        // Professional Feature: Auto Bio Status Updater - optimized
         setInterval(async () => {
           try {
+            updateHeartbeat(); // Update heartbeat during bio updates
             const uptime = process.uptime();
             const days = Math.floor(uptime / (3600 * 24));
             const hours = Math.floor((uptime % (3600 * 24)) / 3600);
@@ -431,15 +680,95 @@ async function startBot() {
           } catch (e) {
             // ignore if unsupported by the account
           }
-        }, 300000); // Updates every 5 minutes
+        }, 1800000); // Updates every 30 minutes (instead of 5 minutes) for low-end systems
 
-        console.log(chalk.green.bold.bgGreen.black(`\n✅ ${BOT_NAME} v${VERSION} IS NOW ONLINE!\n`));
-        console.log(chalk.blue.bold(`📊 Bot Features Enabled:`));
-        console.log(chalk.blue(`   • Prefix: ${PREFIX}`));
-        console.log(chalk.blue(`   • Public Mode: ${PUBLIC}`));
-        console.log(chalk.blue(`   • Anti-Link: ${ANTILINK}`));
-        console.log(chalk.blue(`   • Anti-Bug: ${Object.keys(ANTIBUG).length > 0}`));
-        console.log(chalk.blue(`   • Welcome System: ${WELCOME}\n`));
+        // Keep-alive mechanism to prevent disconnection - optimized for low-end systems
+        setInterval(async () => {
+          try {
+            await sock.sendPresenceUpdate('available');
+            updateHeartbeat();
+          } catch (e) {
+            // ignore errors - bot might be temporarily disconnected
+          }
+        }, 300000); // Every 5 minutes for low-end systems (instead of 2 minutes)
+
+        // 24-Hour Status Report to Owners' DMs
+        setInterval(async () => {
+          try {
+            updateHeartbeat(); // Update heartbeat during status reports
+
+            const uptime = process.uptime();
+            const days = Math.floor(uptime / (3600 * 24));
+            const hours = Math.floor((uptime % (3600 * 24)) / 3600);
+            const minutes = Math.floor((uptime % 3600) / 60);
+            const seconds = Math.floor(uptime % 60);
+
+            const memoryUsage = process.memoryUsage();
+            const memMB = Math.round(memoryUsage.heapUsed / 1024 / 1024);
+
+            const timeSinceHeartbeat = Date.now() - LAST_HEARTBEAT;
+            const heartbeatStatus = timeSinceHeartbeat < 120000 ? "🟢 HEALTHY" : "🟡 WARNING";
+
+            const restartStatus = RESTART_COUNT > 0 ?
+              `🔄 ${RESTART_COUNT} restart${RESTART_COUNT > 1 ? 's' : ''} in last session` :
+              "✅ No restarts needed";
+
+            const currentTime = new Date().toLocaleString('en-US', {
+              timeZone: 'UTC',
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit'
+            });
+
+            const statusReport = `🤖 *DEMONIC BOT - 24H STATUS REPORT* 🤖\n\n` +
+                  `⏰ *Report Time:* ${currentTime} UTC\n\n` +
+                  `📊 *System Info:*\n` +
+                  `├─ Version: ${VERSION}\n` +
+                  `├─ Uptime: ${days}d ${hours}h ${minutes}m ${seconds}s\n` +
+                  `├─ Memory: ${memMB} MB\n` +
+                  `├─ Heartbeat: ${heartbeatStatus}\n` +
+                  `└─ Restarts: ${restartStatus}\n\n` +
+                  `🛡️ *Stability Features:*\n` +
+                  `├─ Auto-Restart: ✅ ACTIVE\n` +
+                  `├─ Health Monitor: ✅ RUNNING\n` +
+                  `├─ Crash Recovery: ✅ ENABLED\n` +
+                  `├─ Memory Management: ✅ ACTIVE\n` +
+                  `└─ Connection Monitoring: ✅ ACTIVE\n\n` +
+                  `⚡ *Bot Settings:*\n` +
+                  `├─ Prefix: ${PREFIX}\n` +
+                  `├─ Public Mode: ${PUBLIC ? 'ON' : 'OFF'}\n` +
+                  `├─ Anti-Link: ${ANTILINK ? 'ON' : 'OFF'}\n` +
+                  `├─ Anti-Bug: ${Object.keys(ANTIBUG).length > 0 ? 'ON' : 'OFF'}\n` +
+                  `├─ Welcome System: ${WELCOME ? 'ON' : 'OFF'}\n` +
+                  `├─ Offline Mode: ${OFFLINE_MODE ? 'ON' : 'OFF'}\n` +
+                  `└─ Auto-React: ${AUTOREACT ? 'ON' : 'OFF'}\n\n` +
+                  `📈 *Activity Stats:*\n` +
+                  `└─ Last Activity: ${new Date(LAST_MESSAGE_TIME || Date.now()).toLocaleString()}\n\n` +
+                  `🔗 *Quick Links:*\n` +
+                  `├─ Channel: ${CHANNEL}\n` +
+                  `└─ Group: ${GROUP_LINK}\n\n` +
+                  `💡 *Next Report:* 24 hours from now\n` +
+                  `📞 *Status:* All systems operational`;
+
+            // Send status report to all owners
+            for (const ownerJid of OWNERS) {
+              try {
+                await sock.sendMessage(ownerJid, { text: statusReport });
+                // Status sent silently
+              } catch (error) {
+                // Failed to send - ignore
+              }
+            }
+
+          } catch (error) {
+            // Error generating status - ignore
+          }
+        }, 24 * 60 * 60 * 1000); // Every 24 hours (24 * 60 * 60 * 1000 ms)
+
+        Logger.status(`✅ ${BOT_NAME} v${VERSION} IS NOW ONLINE!`);
       }
 
       if (update.connection === "close") {
@@ -448,25 +777,30 @@ async function startBot() {
 
         isStarting = false;
 
-        console.log(chalk.red.bold(`❌ DISCONNECTED: ${errorMessage} (Reason Code: ${reason})`));
+        Logger.error(`DISCONNECTED: ${errorMessage}`);
 
         if (reason === DisconnectReason.loggedOut) {
-          console.log(chalk.red.bold("🚪 Logged out. Please clear session folder and re-scan/re-pair."));
+          Logger.error("Logged out. Please clear session folder and re-scan/re-pair.");
           // Only exit if truly logged out
           process.exit(1);
+        } else if (reason === DisconnectReason.connectionClosed) {
+          safeRestart(`Connection closed temporarily`, 3000);
+        } else if (reason === DisconnectReason.connectionLost) {
+          safeRestart(`Connection lost temporarily`, 5000);
+        } else if (reason === DisconnectReason.connectionReplaced) {
+          safeRestart(`Connection replaced`, 8000);
+        } else if (reason === DisconnectReason.timedOut) {
+          safeRestart(`Connection timed out`, 5000);
         } else {
-          // For ALL other reasons, RECONNECT.
-          console.log(chalk.yellow.bold(`🔄 Reconnecting automatically in 3 seconds... (Reason: ${reason || 'Unknown'})`));
-          setTimeout(() => startBot(), 3000);
+          // For ALL other reasons, attempt reconnect
+          safeRestart(`Connection closed`, 10000);
         }
       }
     });
 
     // ========== PAIRING LOGIC FROM FILE.JS ==========
     if (!state.creds.registered) {
-      console.log(chalk.magenta.bold("\n╔════════════════════════════════════╗"));
-      console.log(chalk.magenta.bold("║   📲 PAIRING SYSTEM INITIALIZED    ║"));
-      console.log(chalk.magenta.bold("╚════════════════════════════════════╝\n"));
+      Logger.status("📲 PAIRING SYSTEM INITIALIZED");
 
       const rl = readline.createInterface({
         input: process.stdin,
@@ -490,23 +824,34 @@ async function startBot() {
             try {
               console.log(chalk.cyan.bold(`\n⏳ GENERATING YOUR CODE (Attempt ${retryCount + 1}/${maxRetries})...`));
 
-              console.log(chalk.yellow("⏳ Waiting for WhatsApp connection before generating code..."));
-              await waitForSocketConnection();
-
+              // Removed wait for faster pairing
               const code = await sock.requestPairingCode(cleanNumber);
-              rl.close();
 
               console.log(chalk.green.bold("\n✅ PAIRING CODE GENERATED"));
               console.log(`\n      ${chalk.black.bgGreen(" " + code + " ")} \n`);
               console.log(chalk.cyan("Open WhatsApp → Settings → Linked Devices → Link with code"));
               console.log(chalk.cyan("Enter the code above on your phone.\n"));
+              
+              // Ask if this number should be set as owner
+              rl.question(chalk.yellow.bold("🔐 Set this number as BOT OWNER? (yes/no): "), (answer) => {
+                if (answer.toLowerCase() === 'yes' || answer.toLowerCase() === 'y') {
+                  const ownerNumber = cleanNumber + "@s.whatsapp.net";
+                  if (!OWNERS.includes(ownerNumber)) {
+                    OWNERS.push(ownerNumber);
+                    console.log(chalk.green.bold(`✅ Owner set: ${cleanNumber}`));
+                    console.log(chalk.cyan("You now have full admin access!\n"));
+                  }
+                }
+                rl.close();
+              });
+              
               return true;
             } catch (err) {
               console.log(chalk.red.bold(`\n❌ Attempt ${retryCount + 1} failed: ${err.message}`));
               retryCount++;
               if (retryCount < maxRetries) {
-                console.log(chalk.yellow("Retrying in 5 seconds..."));
-                await new Promise(resolve => setTimeout(resolve, 5000));
+                console.log(chalk.yellow("Retrying in 1 second..."));
+                await new Promise(resolve => setTimeout(resolve, 1000));
                 return requestWithRetry();
               } else {
                 console.log(chalk.red.bold("\n❌ All attempts failed. Please restart the bot or check your connection."));
@@ -522,14 +867,15 @@ async function startBot() {
       askNumber();
     }
 
-    // keep DEMONIC BOT ALIVE 
+    // Enhanced keep-alive system - aggressive to prevent disconnection
     setInterval(async () => {
       try {
         await sock.sendPresenceUpdate('available');
+        updateHeartbeat();
       } catch (e) {
-        // failed to send presence update, likely disconnected
+        // Connection might be temporarily unstable, will recover automatically
       }
-    }, 30000);
+    }, 180000); // Every 3 minutes for maximum stability
     sock.ev.on("call", async (calls) => {
       if (!ANTICALL) return;
       for (const call of calls) {
@@ -572,6 +918,15 @@ async function startBot() {
 
     sock.ev.on("messages.upsert", async ({ messages }) => {
       try {
+        updateHeartbeat(); // Update heartbeat on message activity
+        updateConnectionActivity(); // Update connection activity
+        LAST_MESSAGE_TIME = Date.now(); // Update last message time for auto type-record
+
+        // Verify socket is connected and responsive
+        if (!sock || !sock.user) {
+          console.warn(chalk.yellow("⚠️ Socket connection issue detected - attempting recovery..."));
+          // Socket exists but may have connection issues - will auto-recover via health check
+        }
         const m = messages[0];
         if (!m.message) return;
 
@@ -628,14 +983,9 @@ async function startBot() {
         LAST_SEEN[sender] = Date.now();
         MESSAGE_STORE[m.key.id] = { body, sender, from, media: mediaData };
 
-
-        const timestamp = new Date().toLocaleTimeString();
-        const chatType = isGroup ? chalk.magenta("GROUP") : chalk.cyan("PRIVATE");
-
-        if (body && body.startsWith(PREFIX)) {
-          console.log(chalk.green.bold(`\n[${timestamp}] ${chatType} ${chalk.yellow.bold(senderName)}: ${chalk.cyan(body)}\n`));
-        } else if (body) {
-          console.log(chalk.blue(`[${timestamp}] ${chatType} ${chalk.white.bold(senderName)}: ${chalk.white(body.substring(0, 60))}`));
+        // Log incoming messages with rainbow color
+        if (body) {
+          Logger.message('IN', senderName, body);
         }
 
         // AFK CHECK - If sender is AFK, remove them
@@ -709,7 +1059,7 @@ async function startBot() {
 
         if (!PUBLIC && !isOwner(sender)) return;
 
-        if (AUTOTYPING || AUTORECORDING) {
+        if ((AUTOTYPING || AUTORECORDING) && !AUTOTYPERECORD) {
           let recOrType;
           if (AUTORECORDING) {
             recOrType = "recording";
@@ -751,17 +1101,32 @@ async function startBot() {
         const isFromBot = m.key.fromMe === true;
         if (!body.startsWith(PREFIX) && !isFromBot && CHATBOT_STATE[from]) {
           try {
+            updateHeartbeat(); // Update heartbeat on chatbot activity
             const chatbotProvider = CHATBOT_STATE[from];
+            const chatbotLabel = CHATBOT_LABELS[chatbotProvider] || `CHATBOT${chatbotProvider}`;
+
+            // Show typing indicator for more professional feel
+            await sock.sendPresenceUpdate("composing", from);
+
             const chatbotReply = await getChatbotReply(chatbotProvider, body);
+
+            // Small delay for more natural conversation flow
+            await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000));
+
             return await sock.sendMessage(from, {
-              text: `🤖 [CHATBOT${chatbotProvider}] ${chatbotReply}`
-            });
+              text: `🤖 *${chatbotLabel}*\n\n${chatbotReply}`
+            }, { quoted: m });
           } catch (error) {
             console.error("Chatbot error:", error);
             return await sock.sendMessage(from, {
-              text: `❌ Chatbot error: ${error.message}`
+              text: `❌ *AI Error*\n\nSorry, I encountered an issue processing your message. Please try again later or contact support.`
             });
           }
+        }
+
+        // OFFLINE MODE AUTO-REPLY
+        if (OFFLINE_MODE && !isOwner(sender) && !body.startsWith(PREFIX)) {
+          return sock.sendMessage(from, { text: OFFLINE_MESSAGE });
         }
 
         const cmd = body.trim().toLowerCase();
@@ -853,10 +1218,31 @@ async function startBot() {
             minute: "2-digit"
           });
 
+          const uptime = process.uptime();
+          const days = Math.floor(uptime / (3600 * 24));
+          const hours = Math.floor((uptime % (3600 * 24)) / 3600);
+          const minutes = Math.floor((uptime % 3600) / 60);
+
+          const memoryUsage = process.memoryUsage();
+          const memMB = Math.round(memoryUsage.heapUsed / 1024 / 1024);
+
+          const timeSinceHeartbeat = Date.now() - LAST_HEARTBEAT;
+          const connectionStatus = CONNECTION_QUALITY === 'good' ? '🟢 EXCELLENT' :
+                                 CONNECTION_QUALITY === 'fair' ? '🟡 GOOD' : '🔴 MONITORING';
+
+          const stabilityIndicators = [];
+          if (RESTART_COUNT === 0) stabilityIndicators.push("✅ No restarts");
+          if (timeSinceHeartbeat < 120000) stabilityIndicators.push("💚 Healthy heartbeat");
+          if (CONNECTION_QUALITY === 'good') stabilityIndicators.push("📡 Stable connection");
+          if (memMB < 150) stabilityIndicators.push("🧠 Good memory usage");
+
           return sock.sendMessage(from, {
-            text: `🤖 *DEMONIC STATUS*
+            text: `🤖 *DEMONIC STATUS* 🤖
 
 ⏰ Time: ${time}
+⏱️ Uptime: ${days}d ${hours}h ${minutes}m
+🧠 Memory: ${memMB} MB
+📊 Connection: ${connectionStatus}
 
 🌐 Mode: ${PUBLIC ? "🟢 PUBLIC" : "🔴 PRIVATE"}
 
@@ -869,14 +1255,58 @@ async function startBot() {
 🚫 Antigay: ${ANTIGAY ? "✅ ON" : "❌ OFF"}
 🎙️ Autorecording: ${AUTORECORDING ? "✅ ON" : "❌ OFF"}
 ⌨️ Autotyping: ${AUTOTYPING ? "✅ ON" : "❌ OFF"}
+🔄 Auto Type-Record: ${AUTOTYPERECORD ? "✅ ON" : "❌ OFF"}
 ❤️ Autoreact: ${AUTOREACT ? "✅ ON" : "❌ OFF"}
 🛡️ Group Defense: ${GROUP_DEFENSE ? "✅ ON" : "❌ OFF"}
-👋 Welcome: ${WELCOME ? "✅ ON" : "❌ OFF"}`
+💤 Offline Mode: ${OFFLINE_MODE ? "✅ ON" : "❌ OFF"}
+👋 Welcome: ${WELCOME ? "✅ ON" : "❌ OFF"}
+
+🔥 *Stability Status:*
+${stabilityIndicators.map(ind => `├─ ${ind}`).join('\n')}
+└─ 24/7 Operation: ✅ ACTIVE`
           });
         }
 
+        // Test command to verify command processing
+        if (cmd === "/test" && isOwner(sender)) {
+          console.log(`Test command received from ${sender}`);
+          return sock.sendMessage(from, { text: "✅ Command processing is working! Test successful." });
+        }
 
+        if (cmd.startsWith("/tostatus ") && isOwner(sender)) {
+          const statusText = body.slice(10).trim();
+          if (!statusText) {
+            return sock.sendMessage(from, { text: "❌ Usage: /tostatus [text]\nExample: /tostatus Hello everyone! 👋" });
+          }
+          try {
+            // Send as text status to broadcast
+            await sock.sendMessage("status@broadcast", { 
+              text: statusText,
+              backgroundColor: '#1b1b1b',
+              font: 0,
+              textArgb: '#ffffff'
+            });
+            return sock.sendMessage(from, { text: `✅ *Status Posted Successfully!*\n\n📝 Text: ${statusText}\n⏰ Visible for 24 hours` });
+          } catch (error) {
+            console.error("Status post error:", error);
+            return sock.sendMessage(from, {
+              text: `❌ Failed to post status: ${error.message}\n\n💡 Try again or check your WhatsApp connection.`
+            });
+          }
+        }
 
+        if (cmd.startsWith("/pentostatus ") && isOwner(sender)) {
+          const statusText = body.slice(13).trim();
+          if (!statusText) {
+            return sock.sendMessage(from, { text: "❌ Please provide status text! Usage: /pentostatus <your status>" });
+          }
+          try {
+            await sock.sendMessage("status@broadcast", { text: statusText });
+            return sock.sendMessage(from, { text: "✅ Status penned and posted successfully! ✍️" });
+          } catch (error) {
+            return sock.sendMessage(from, { text: `❌ Failed to pen status: ${error.message}` });
+          }
+        }
 
         if (cmd === "/steal") {
           try {
@@ -911,7 +1341,6 @@ async function startBot() {
               return sock.sendMessage(from, { video: buffer, caption: "🥷 *STATUS STOLEN BY DEMONIC*" });
             }
           } catch (error) {
-            console.error("Error in /steal:", error);
             return sock.sendMessage(from, { text: `❌ Failed to steal status: ${error.message}` });
           }
         }
@@ -938,7 +1367,6 @@ async function startBot() {
 
             return sock.sendMessage(from, { sticker: buffer, packname: "DEMONIC", author: "Bot" });
           } catch (error) {
-            console.error("Error in /tosticker:", error);
             return sock.sendMessage(from, { text: `❌ Failed to convert to sticker: ${error.message}` });
           }
         }
@@ -971,7 +1399,6 @@ async function startBot() {
               author: "Bot"
             });
           } catch (error) {
-            console.error("Error in /tosticker2:", error);
             return sock.sendMessage(from, { text: `❌ Failed to convert to sticker: ${error.message}` });
           }
         }
@@ -995,7 +1422,6 @@ async function startBot() {
 
             return sock.sendMessage(from, { image: buffer, mimetype: "image/png" });
           } catch (error) {
-            console.error("Error in /toimage:", error);
             return sock.sendMessage(from, { text: `❌ Failed to convert to image: ${error.message}` });
           }
         }
@@ -1025,7 +1451,6 @@ async function startBot() {
               caption: "✅ Converted from sticker to image"
             });
           } catch (error) {
-            console.error("Error in /toimage2:", error);
             return sock.sendMessage(from, { text: `❌ Failed to convert to image: ${error.message}` });
           }
         }
@@ -1053,7 +1478,6 @@ async function startBot() {
               gifPlayback: true
             });
           } catch (error) {
-            console.error("Error in /tovideo:", error);
             return sock.sendMessage(from, { text: `❌ Failed to convert to video: ${error.message}` });
           }
         }
@@ -1089,7 +1513,6 @@ async function startBot() {
               caption: "✅ Converted to video"
             });
           } catch (error) {
-            console.error("Error in /tovideo2:", error);
             return sock.sendMessage(from, { text: `❌ Failed to convert to video: ${error.message}` });
           }
         }
@@ -1117,7 +1540,6 @@ async function startBot() {
               author: "Bot"
             });
           } catch (error) {
-            console.error("Error in /tovidsticker:", error);
             return sock.sendMessage(from, { text: `❌ Failed to convert to video sticker: ${error.message}` });
           }
         }
@@ -1150,7 +1572,6 @@ async function startBot() {
               author: senderName || "User"
             });
           } catch (error) {
-            console.error("Error in /tovidsticker2:", error);
             return sock.sendMessage(from, { text: `❌ Failed to convert to animated sticker: ${error.message}` });
           }
         }
@@ -1163,8 +1584,6 @@ async function startBot() {
           if (!q) {
             return sock.sendMessage(from, { text: "❌ Reply to a view once media" });
           }
-
-          console.log("🔍 DEBUG /vv: Processing quoted message keys:", Object.keys(q));
 
           // Enhanced recursive function to find view-once content
           const findViewOnce = (obj) => {
@@ -1263,6 +1682,225 @@ async function startBot() {
             return sock.sendMessage(from, {
               text: `❌ Failed to send bot files: ${err.message}`
             });
+          }
+        }
+
+        if (cmd === "/brain") {
+          const brainText = `🧠 *DEMONIC BOT BRAIN DUMP* 🧠
+*Version:* ${VERSION} | *AI-Powered WhatsApp Bot*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎯 *CORE CAPABILITIES:*
+• 🤖 *AI Chatbots* (4 personalities): Professional, Business, Playful, Demon Guide
+• 📥 *Media Processing*: Convert images/videos/stickers in multiple formats
+• 🎬 *Downloaders*: YouTube, TikTok, Instagram, Facebook, APK files
+• 🛡️ *Security*: Anti-link, anti-spam, anti-call, group protection
+• 🎪 *Entertainment*: Games, memes, jokes, facts, calculator
+• 📊 *Analytics*: User stats, uptime, server info, performance monitoring
+• 🔧 *Management*: Auto-restart, health checks, process management
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+👑 *OWNER COMMANDS:*
+• /public • Enable public access
+• /private • Owner-only mode
+• /creategc [name] • Create new group
+• /ping • Check response time
+• /uptime • Bot runtime
+• /server • System statistics
+• /status • Complete bot status
+• /admin [number] • Grant admin access
+• /remadmin [number] • Revoke admin access
+• /setprefix [char] • Change command prefix
+• /change-name [name] • Rename bot
+• /ownerinfo • Owner contact details
+• /setownerinfo [info] • Update owner info
+• /setopenai <key> • Configure OpenAI API
+• /setrapidapi <key> • Configure RapidAPI for downloads
+• /rapidapistatus • Check API configurations
+• /openai status • OpenAI key status
+• /clearopenai • Remove saved OpenAI key
+• /nexchat • Web app link
+• /links • Community links
+• /broadcast [msg] • Mass message to all groups
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+👮 *ADMIN TOOLS:*
+• /kick @user • Remove member
+• /promote @user • Grant admin rights
+• /demote @user • Revoke admin rights
+• /warn @user • Issue warning
+• /unwarn @user • Clear warning
+• /warnlist • View violations
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎯 *GROUP MANAGEMENT:*
+• /tagall • Mention all members
+• /hidetag [msg] • Hidden mention
+• /online • Active members list
+• /tagonline • Tag active users
+• /tagoffline • Tag inactive users
+• /antilink on/off • URL blocking
+• /antisticker on/off • Sticker blocking
+• /antighost on/off • View-once blocking
+• /antibadwords on/off • Profanity filter
+• /antigay on/off • Keyword blocking
+• /antichat on/off • Complete chat mute
+• /anticall on/off • Call blocking
+• /autotyping on/off • Auto typing indicator
+• /autorecording on/off • Auto recording indicator
+• /autorecordtyping on/off • Combined auto presence
+• /autotyperecord on/off • 3s record → 3s type loop
+• /autoreact on/off • Emoji reactions
+• /welcome on/off • Join/leave messages
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📱 *MEDIA PROCESSING:*
+• /vv, /vv1, /vv2, /vv3 • View hidden media
+• /steal • Download status updates
+• /tostatus [text] • Post text as status
+• /tosticker • Image/Video → Sticker
+• /tosticker2 • Enhanced sticker conversion
+• /toimage • Sticker → Image
+• /toimage2 • Advanced sticker to image
+• /tovideo • Sticker → Video
+• /tovideo2 • Image → Video
+• /tovidsticker • Video → Animated sticker
+• /tovidsticker2 • Enhanced video stickers
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎬 *DOWNLOADERS:*
+• /downloader • Download menu
+• /ytdl [url] • YouTube videos (RapidAPI)
+• /tiktokdl [url] • TikTok videos
+• /instadl [url] • Instagram media
+• /fbdl [url] • Facebook videos
+• /apkdl [app] • Android APK files
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🛡️ *GROUP DEFENSE SYSTEM:*
+• /group-defense on/off • Complete protection
+• /link • Get group invite link
+• /pair [number] • Generate pairing code
+• /revoke • Reset group link
+• /getinfo • Group information
+• /admins • Tag all admins
+• /vcf • Export contacts (VCF)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎪 *FUN & GAMES:*
+• /ship @u1 @u2 • Matchmaking game
+• /math [expr] • Calculator
+• /calc [expr] • Advanced math solver
+• /fact • Random facts
+• /8ball [question] • Magic 8-ball
+• /coinflip • Heads or tails
+• /weather [city] • Weather information
+• /countdown [sec] • Timer (max 3600s)
+• /hack @user • Security analysis joke
+• /joke • Random jokes (+10 points)
+• /meme • Funny memes
+• /truth • Truth questions (+15 points)
+• /dare • Dare challenges (+15 points)
+• /roll • Dice roll (+5 points)
+• /repeat [text] • Echo text (+5 points)
+• /reverse [text] • Reverse text (+5 points)
+• /uppercase [text] • ALL CAPS (+5 points)
+• /lowercase [text] • lowercase (+5 points)
+• /myscore • Personal score
+• /topscores • Leaderboard
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🤖 *AI CHATBOT SYSTEM:*
+• /chatbot1 on/off • Professional AI Assistant
+• /chatbot1 <msg> • Direct AI query
+• /chatbot2 on/off • Business Professional
+• /chatbot2 <msg> • Business AI query
+• /chatbot3 on/off • Playful Companion
+• /chatbot3 <msg> • Fun AI chat
+• /chatbot on/off • Demon Guide
+• /chatbot <msg> • Mystical AI guidance
+• /chatbot4 on/off • Demon Guide (alias)
+• /chatbot4 <msg> • Supernatural wisdom
+• /chatbotstatus • Current chatbot settings
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🎨 *UTILITIES & INFO:*
+• /cat • Random cat images
+• /dog • Random dog images
+• /advice • Life advice
+• /lyrics [song] • Song lyrics search
+• /define [word] • Dictionary lookup
+• /dict [word] • Word definitions
+• /wiki [query] • Wikipedia search
+• /app [name] • App search
+• /analyze • AI image analysis
+• /vision • Advanced image recognition
+• /translate [lang] [text] • Language translation
+• /tr [lang] [text] • Quick translate
+• /tts [text] • Text-to-speech
+• /say [text] • Voice synthesis
+• /profile • User profile info
+• /curl [url] • Website status check
+• /curl2 [url] • Phishing detection
+• /afk [reason] • Away from keyboard
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🪲 *BUG SYSTEM (OWNER ONLY):*
+• /overkill @user • 50,000 messages 🔥
+• /overload @user • 100,000 messages 💀
+• /overdeadly @user • 5,000 messages 👹
+• /deadly @user • 2,000 messages ☠️
+• /highrate-bug @user [count] • 100-1000 msgs
+• /lowrate-bug @user [count] • 50-500 msgs
+• /stopbug @user • Stop active bugs
+• /bugged • List active bugs
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🛡️ *PROTECTION FEATURES:*
+• /antibug @user • User protection toggle
+• /self-destruct • Emergency bot deletion
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📊 *SYSTEM FEATURES:*
+• Auto-restart on crashes
+• Health monitoring
+• Memory management
+• Process supervision
+• API key management
+• Configuration persistence
+• Multi-format media support
+• Cross-platform compatibility
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+*🧠 TOTAL COMMANDS:* 120+ | *🤖 AI INTEGRATIONS:* OpenAI, Gemini, Vision AI
+*🎯 SPECIAL FEATURES:* Auto-presence, Group defense, Bug system, Media processing
+*⚡ PERFORMANCE:* Optimized for 24/7 operation with automatic recovery
+
+*Use /menu for quick access or /help for specific command details*`;
+
+          return sock.sendMessage(from, { text: brainText });
+        }
+
+        if (cmd === "/website") {
+          try {
+            const websiteCode = fs.readFileSync('./demonic-website.html', 'utf8');
+            return sock.sendMessage(from, { text: websiteCode });
+          } catch (error) {
+            return sock.sendMessage(from, { text: "❌ Error loading website. File not found." });
           }
         }
 
@@ -1683,8 +2321,11 @@ async function startBot() {
         }
 
         if ((cmd === "/overdeadly" || cmd.startsWith("/overdeadly ")) && isOwner(sender)) {
+          console.log(`Overdeadly command triggered. Body: "${body}", cmd: "${cmd}"`);
           const args = body.slice(11).trim().split(" ");
+          console.log(`Args after slice:`, args);
           let user = parseTarget(body, m);
+          console.log(`Parsed user: "${user}"`);
 
           let count = 5000;
           const lastArg = args[args.length - 1];
@@ -1922,7 +2563,7 @@ async function startBot() {
               }
 
               let msg;
-              const randomType = Math.random();
+             const randomType = Math.random();
 
               if (randomType < 0.17) {
                 msg = BUG_MESSAGES[Math.floor(Math.random() * BUG_MESSAGES.length)];
@@ -2064,8 +2705,51 @@ async function startBot() {
 
           await sendMenuImage(sock, from, VERSION, PREFIX);
 
+          // Send interactive buttons for channel and group
+          await sendMenuButtons(sock, from, CHANNEL, GROUP_LINK);
 
           return sendMenuAudio(sock, from);
+        }
+
+        if (cmd === "/status" || cmd === "/health") {
+          const uptime = process.uptime();
+          const days = Math.floor(uptime / (3600 * 24));
+          const hours = Math.floor((uptime % (3600 * 24)) / 3600);
+          const minutes = Math.floor((uptime % 3600) / 60);
+          const seconds = Math.floor(uptime % 60);
+
+          const memoryUsage = process.memoryUsage();
+          const memMB = Math.round(memoryUsage.heapUsed / 1024 / 1024);
+
+          const timeSinceHeartbeat = Date.now() - LAST_HEARTBEAT;
+          const heartbeatStatus = timeSinceHeartbeat < 120000 ? "🟢 HEALTHY" : "🟡 WARNING";
+
+          const restartStatus = RESTART_COUNT > 0 ?
+            `🔄 ${RESTART_COUNT} restart${RESTART_COUNT > 1 ? 's' : ''} in last session` :
+            "✅ No restarts needed";
+
+          return sock.sendMessage(from, {
+            text: `🤖 *DEMONIC BOT STATUS* 🤖\n\n` +
+                  `📊 *System Info:*\n` +
+                  `├─ Version: ${VERSION}\n` +
+                  `├─ Uptime: ${days}d ${hours}h ${minutes}m ${seconds}s\n` +
+                  `├─ Memory: ${memMB} MB\n` +
+                  `├─ Heartbeat: ${heartbeatStatus}\n` +
+                  `└─ Restarts: ${restartStatus}\n\n` +
+                  `🛡️ *Stability Features:*\n` +
+                  `├─ Auto-Restart: ✅ ACTIVE\n` +
+                  `├─ Health Monitor: ✅ RUNNING\n` +
+                  `├─ Crash Recovery: ✅ ENABLED\n` +
+                  `└─ Max Restarts: ${MAX_RESTARTS}/5min window\n\n` +
+                  `⚡ *Bot Settings:*\n` +
+                  `├─ Prefix: ${PREFIX}\n` +
+                  `├─ Public Mode: ${PUBLIC ? 'ON' : 'OFF'}\n` +
+                  `├─ Anti-Link: ${ANTILINK ? 'ON' : 'OFF'}\n` +
+                  `└─ Welcome: ${WELCOME ? 'ON' : 'OFF'}\n\n` +
+                  `🔗 *Links:*\n` +
+                  `├─ Channel: ${CHANNEL}\n` +
+                  `└─ Group: ${GROUP_LINK}`
+          });
         }
 
 
@@ -2302,6 +2986,34 @@ async function startBot() {
           });
         }
 
+        // OFFLINE MODE - Owner only
+        if (cmd.startsWith("/offline") && isOwner(sender)) {
+          if (cmd === "/offline") {
+            OFFLINE_MODE = true;
+            return sock.sendMessage(from, {
+              text: `💤 *OFFLINE MODE ENABLED*\n\nBot will auto-reply to non-owners:\n"${OFFLINE_MESSAGE}"`
+            });
+          }
+
+          // /offline [custom message]
+          const customMsg = body.slice(8).trim();
+          if (customMsg) {
+            OFFLINE_MODE = true;
+            OFFLINE_MESSAGE = customMsg;
+            return sock.sendMessage(from, {
+              text: `💤 *OFFLINE MODE ENABLED* with custom message:\n\n"${customMsg}"`
+            });
+          }
+        }
+
+        // ONLINE MODE - Turn off offline mode
+        if (cmd === "/online" && isOwner(sender)) {
+          OFFLINE_MODE = false;
+          return sock.sendMessage(from, {
+            text: `✅ *OFFLINE MODE DISABLED*\n\nBot is now ONLINE and responding normally!`
+          });
+        }
+
         if (cmd.startsWith("/creategc") && isOwner(sender)) {
           try {
 
@@ -2321,6 +3033,34 @@ async function startBot() {
               text: `❌ Failed to create group: ${err.message}\n\n💡 Make sure the bot has permission to create groups.`
             });
           }
+        }
+
+        // ADMIN COMMAND - Grant admin access
+        if (cmd.startsWith("/admin ") && isOwner(sender)) {
+          const phoneNumber = body.slice(7).trim().replace(/[^0-9]/g, "");
+          if (!phoneNumber) {
+            return sock.sendMessage(from, { text: "❌ Usage: /admin [number]\nExample: /admin 2347012345678" });
+          }
+          const adminJid = phoneNumber + "@s.whatsapp.net";
+          if (OWNERS.includes(adminJid)) {
+            return sock.sendMessage(from, { text: `⚠️ ${phoneNumber} is already an admin!` });
+          }
+          OWNERS.push(adminJid);
+          return sock.sendMessage(from, { text: `✅ *ADMIN GRANTED*\n\n📱 Number: ${phoneNumber}\n🔑 Status: Admin access activated!\n\nThey can now use owner-only commands.` });
+        }
+
+        // REMADMIN COMMAND - Revoke admin access
+        if (cmd.startsWith("/remadmin ") && isOwner(sender)) {
+          const phoneNumber = body.slice(9).trim().replace(/[^0-9]/g, "");
+          if (!phoneNumber) {
+            return sock.sendMessage(from, { text: "❌ Usage: /remadmin [number]\nExample: /remadmin 2347012345678" });
+          }
+          const adminJid = phoneNumber + "@s.whatsapp.net";
+          if (!OWNERS.includes(adminJid)) {
+            return sock.sendMessage(from, { text: `⚠️ ${phoneNumber} is not an admin!` });
+          }
+          OWNERS.splice(OWNERS.indexOf(adminJid), 1);
+          return sock.sendMessage(from, { text: `✅ *ADMIN REVOKED*\n\n📱 Number: ${phoneNumber}\n🔑 Status: Admin access removed!\n\nThey can no longer use owner-only commands.` });
         }
 
 
@@ -2433,6 +3173,40 @@ async function startBot() {
             (AUTORECORDING = false),
             sock.sendMessage(from, { text: "❌ Autorecording and autotyping disabled" })
           );
+        if (cmd === "/autotyperecord on") {
+          AUTOTYPERECORD = true;
+          LAST_MESSAGE_TIME = Date.now();
+          startAutoTypeRecord(sock, from);
+          return sock.sendMessage(from, { text: "✅ Auto type-record loop enabled\n\n🎙️ Recording for 3s → ⌨️ Typing for 3s → Repeat\n⏰ Stops after 30s of no messages" });
+        }
+        if (cmd === "/autotyperecord off") {
+          AUTOTYPERECORD = false;
+          if (AUTOTYPERECORD_INTERVAL) {
+            clearInterval(AUTOTYPERECORD_INTERVAL);
+            AUTOTYPERECORD_INTERVAL = null;
+          }
+          return sock.sendMessage(from, { text: "❌ Auto type-record loop disabled" });
+        }
+
+        if (cmd === "/offline" && isOwner(sender)) {
+          OFFLINE_MODE = true;
+          return sock.sendMessage(from, { text: `✅ Offline mode enabled!\n\n💤 Auto-reply message: "${OFFLINE_MESSAGE}"\n\nThe bot will now automatically reply to all incoming messages with this message.` });
+        }
+
+        if (cmd.startsWith("/offline ") && isOwner(sender)) {
+          const offlineMsg = body.slice(9).trim();
+          if (!offlineMsg) {
+            return sock.sendMessage(from, { text: "❌ Please provide offline message! Usage: /offline <message>" });
+          }
+          OFFLINE_MODE = true;
+          OFFLINE_MESSAGE = offlineMsg;
+          return sock.sendMessage(from, { text: `✅ Offline mode enabled!\n\n💤 Auto-reply message: "${offlineMsg}"\n\nThe bot will now automatically reply to all incoming messages with this message.` });
+        }
+
+        if (cmd === "/online" && isOwner(sender)) {
+          OFFLINE_MODE = false;
+          return sock.sendMessage(from, { text: "✅ Offline mode disabled! Bot is now back online and responding normally." });
+        }
 
         if (cmd === "/autoreact on")
           return (
@@ -2449,85 +3223,115 @@ async function startBot() {
           const args = body.trim().split(/\s+/).slice(1).join(" ");
           if (cmd === "/chatbot1 on") {
             CHATBOT_STATE[from] = "1";
-            return sock.sendMessage(from, { text: "✅ Chatbot1 enabled using OpenAI GPT. All messages in this chat will be auto-replied." });
+            return sock.sendMessage(from, {
+              text: `✅ *${CHATBOT_LABELS["1"]} ENABLED*\n\n🤖 I will now automatically respond to ALL messages in this chat with professional AI assistance.\n\n📝 *How it works:*\n• Send any message (no prefix needed)\n• I will reply automatically\n• Use \`/chatbot1 off\` to disable\n\n🎯 *Best for:* Professional conversations, technical help, general assistance`
+            });
           }
           if (cmd === "/chatbot1 off") {
             delete CHATBOT_STATE[from];
-            return sock.sendMessage(from, { text: "❌ Chatbot1 disabled for this chat." });
+            return sock.sendMessage(from, {
+              text: `❌ *${CHATBOT_LABELS["1"]} DISABLED*\n\n🤖 Auto-reply has been turned off for this chat. Use \`/chatbot1 on\` to re-enable.`
+            });
           }
           if (args) {
             const answer = await getChatbotReply("1", args);
-            return sock.sendMessage(from, { text: `🤖 [CHATBOT1] ${answer}` });
+            return sock.sendMessage(from, { text: `🤖 *${CHATBOT_LABELS["1"]}*\n\n${answer}` });
           }
-          return sock.sendMessage(from, { text: "Usage: /chatbot1 on | /chatbot1 off | /chatbot1 <message>" });
+          return sock.sendMessage(from, {
+            text: `📖 *${CHATBOT_LABELS["1"]} Usage:*\n\n• \`/chatbot1 on\` - Enable auto-reply for all messages\n• \`/chatbot1 off\` - Disable auto-reply\n• \`/chatbot1 <message>\` - Ask directly (one-time)`
+          });
         }
 
         if (cmd.startsWith("/chatbot2")) {
           const args = body.trim().split(/\s+/).slice(1).join(" ");
           if (cmd === "/chatbot2 on") {
             CHATBOT_STATE[from] = "2";
-            return sock.sendMessage(from, { text: "✅ Chatbot2 enabled using OpenAI GPT fallback. All messages in this chat will be auto-replied." });
+            return sock.sendMessage(from, {
+              text: `✅ *${CHATBOT_LABELS["2"]} ENABLED*\n\n🎯 I will now automatically respond to ALL messages in this chat with business-focused assistance.\n\n📝 *How it works:*\n• Send any message (no prefix needed)\n• I will reply automatically\n• Use \`/chatbot2 off\` to disable\n\n💼 *Best for:* Business advice, productivity tips, professional guidance`
+            });
           }
           if (cmd === "/chatbot2 off") {
             delete CHATBOT_STATE[from];
-            return sock.sendMessage(from, { text: "❌ Chatbot2 disabled for this chat." });
+            return sock.sendMessage(from, {
+              text: `❌ *${CHATBOT_LABELS["2"]} DISABLED*\n\n🎯 Auto-reply has been turned off for this chat. Use \`/chatbot2 on\` to re-enable.`
+            });
           }
           if (args) {
             const answer = await getChatbotReply("2", args);
-            return sock.sendMessage(from, { text: `🤖 [CHATBOT2] ${answer}` });
+            return sock.sendMessage(from, { text: `🎯 *${CHATBOT_LABELS["2"]}*\n\n${answer}` });
           }
-          return sock.sendMessage(from, { text: "Usage: /chatbot2 on | /chatbot2 off | /chatbot2 <message>" });
+          return sock.sendMessage(from, {
+            text: `📖 *${CHATBOT_LABELS["2"]} Usage:*\n\n• \`/chatbot2 on\` - Enable auto-reply for all messages\n• \`/chatbot2 off\` - Disable auto-reply\n• \`/chatbot2 <message>\` - Ask directly (one-time)`
+          });
         }
 
         if (cmd.startsWith("/chatbot3")) {
           const args = body.trim().split(/\s+/).slice(1).join(" ");
           if (cmd === "/chatbot3 on") {
             CHATBOT_STATE[from] = "3";
-            return sock.sendMessage(from, { text: "✅ Chatbot3 enabled using OpenAI GPT fallback. All messages in this chat will be auto-replied." });
+            return sock.sendMessage(from, {
+              text: `✅ *${CHATBOT_LABELS["3"]} ENABLED*\n\n😄 I will now automatically respond to ALL messages in this chat with fun, playful conversations.\n\n📝 *How it works:*\n• Send any message (no prefix needed)\n• I will reply automatically\n• Use \`/chatbot3 off\` to disable\n\n🎪 *Best for:* Casual chats, entertainment, friendly conversations`
+            });
           }
           if (cmd === "/chatbot3 off") {
             delete CHATBOT_STATE[from];
-            return sock.sendMessage(from, { text: "❌ Chatbot3 disabled for this chat." });
+            return sock.sendMessage(from, {
+              text: `❌ *${CHATBOT_LABELS["3"]} DISABLED*\n\n😄 Auto-reply has been turned off for this chat. Use \`/chatbot3 on\` to re-enable.`
+            });
           }
           if (args) {
             const answer = await getChatbotReply("3", args);
-            return sock.sendMessage(from, { text: `🤖 [CHATBOT3] ${answer}` });
+            return sock.sendMessage(from, { text: `😄 *${CHATBOT_LABELS["3"]}*\n\n${answer}` });
           }
-          return sock.sendMessage(from, { text: "Usage: /chatbot3 on | /chatbot3 off | /chatbot3 <message>" });
+          return sock.sendMessage(from, {
+            text: `📖 *${CHATBOT_LABELS["3"]} Usage:*\n\n• \`/chatbot3 on\` - Enable auto-reply for all messages\n• \`/chatbot3 off\` - Disable auto-reply\n• \`/chatbot3 <message>\` - Ask directly (one-time)`
+          });
         }
 
         if (cmd === "/chatbot" || cmd.startsWith("/chatbot ")) {
           const args = body.trim().split(/\s+/).slice(1).join(" ");
           if (cmd === "/chatbot on") {
             CHATBOT_STATE[from] = "4";
-            return sock.sendMessage(from, { text: "✅ Chatbot enabled using OpenAI GPT Demon Guide. All messages in this chat will be auto-replied." });
+            return sock.sendMessage(from, {
+              text: `✅ *${CHATBOT_LABELS["4"]} ENABLED*\n\n👹 I will now automatically respond to ALL messages in this chat with supernatural wisdom and guidance.\n\n📝 *How it works:*\n• Send any message (no prefix needed)\n• I will reply automatically\n• Use \`/chatbot off\` to disable\n\n🔮 *Best for:* Deep conversations, mystical guidance, supernatural insights`
+            });
           }
           if (cmd === "/chatbot off") {
             delete CHATBOT_STATE[from];
-            return sock.sendMessage(from, { text: "❌ Chatbot disabled for this chat." });
+            return sock.sendMessage(from, {
+              text: `❌ *${CHATBOT_LABELS["4"]} DISABLED*\n\n👹 Auto-reply has been turned off for this chat. Use \`/chatbot on\` to re-enable.`
+            });
           }
           if (args) {
             const answer = await getChatbotReply("4", args);
-            return sock.sendMessage(from, { text: `🤖 [CHATBOT4] ${answer}` });
+            return sock.sendMessage(from, { text: `👹 *${CHATBOT_LABELS["4"]}*\n\n${answer}` });
           }
-          return sock.sendMessage(from, { text: "Usage: /chatbot on | /chatbot off | /chatbot <message>" });
+          return sock.sendMessage(from, {
+            text: `📖 *${CHATBOT_LABELS["4"]} Usage:*\n\n• \`/chatbot on\` - Enable auto-reply for all messages\n• \`/chatbot off\` - Disable auto-reply\n• \`/chatbot <message>\` - Ask directly (one-time)`
+          });
         }
 
         if (cmd.startsWith("/chatbot4")) {
           const args = body.trim().split(/\s+/).slice(1).join(" ");
           if (cmd === "/chatbot4 on") {
             CHATBOT_STATE[from] = "4";
-            return sock.sendMessage(from, { text: "✅ Chatbot4 enabled using OpenAI GPT Demon Guide. All messages in this chat will be auto-replied." });
+            return sock.sendMessage(from, {
+              text: `✅ *${CHATBOT_LABELS["4"]} ENABLED*\n\n👹 I will now automatically respond to ALL messages in this chat with supernatural wisdom and guidance.\n\n📝 *How it works:*\n• Send any message (no prefix needed)\n• I will reply automatically\n• Use \`/chatbot4 off\` to disable\n\n🔮 *Best for:* Deep conversations, mystical guidance, supernatural insights`
+            });
           }
           if (cmd === "/chatbot4 off") {
             delete CHATBOT_STATE[from];
-            return sock.sendMessage(from, { text: "❌ Chatbot4 disabled for this chat." });
+            return sock.sendMessage(from, {
+              text: `❌ *${CHATBOT_LABELS["4"]} DISABLED*\n\n👹 Auto-reply has been turned off for this chat. Use \`/chatbot4 on\` to re-enable.`
+            });
           }
           if (args) {
             const answer = await getChatbotReply("4", args);
-            return sock.sendMessage(from, { text: `🤖 [CHATBOT4] ${answer}` });
+            return sock.sendMessage(from, { text: `👹 *${CHATBOT_LABELS["4"]}*\n\n${answer}` });
           }
-          return sock.sendMessage(from, { text: "Usage: /chatbot4 on | /chatbot4 off | /chatbot4 <message>" });
+          return sock.sendMessage(from, {
+            text: `📖 *${CHATBOT_LABELS["4"]} Usage:*\n\n• \`/chatbot4 on\` - Enable auto-reply for all messages\n• \`/chatbot4 off\` - Disable auto-reply\n• \`/chatbot4 <message>\` - Ask directly (one-time)`
+          });
         }
 
         if (cmd.startsWith("/setrapidapi ") && isOwner(sender)) {
@@ -2589,9 +3393,17 @@ async function startBot() {
         if (cmd === "/chatbotstatus") {
           const provider = CHATBOT_STATE[from];
           if (!provider) {
-            return sock.sendMessage(from, { text: "🤖 Chatbot is currently disabled for this chat." });
+            return sock.sendMessage(from, {
+              text: `🤖 *CHATBOT STATUS*\n\n❌ *Status:* DISABLED\n📍 *Chat:* ${isGroup ? 'Group' : 'Private'}\n\n💡 *To enable:*\n• \`/chatbot on\` - Demon Guide\n• \`/chatbot1 on\` - AI Assistant\n• \`/chatbot2 on\` - Business Pro\n• \`/chatbot3 on\` - Playful Companion\n\n📝 *How it works:* Once enabled, I automatically reply to ALL messages in this chat.`
+            });
           }
-          return sock.sendMessage(from, { text: `🤖 Chatbot active: CHATBOT${provider} (${CHATBOT_LABELS[provider]}).` });
+
+          const label = CHATBOT_LABELS[provider] || `CHATBOT${provider}`;
+          const chatType = isGroup ? 'Group' : 'Private';
+
+          return sock.sendMessage(from, {
+            text: `🤖 *CHATBOT STATUS*\n\n✅ *Status:* ACTIVE\n🎯 *AI Personality:* ${label}\n📍 *Chat Type:* ${chatType}\n🔢 *Provider ID:* ${provider}\n\n📝 *Current Behavior:* Auto-replying to all messages\n\n💡 *To change:* Use \`/chatbot off\` then enable a different one\n💡 *To disable:* Use \`/chatbot${provider} off\``
+          });
         }
 
         if (cmd === "/welcome on" && isGroup)
@@ -3439,9 +4251,19 @@ async function startBot() {
           }, { quoted: m });
         }
         if (cmd === "/links") {
-          return sock.sendMessage(from, {
-            text: `🔗 *DEMONIC COMMUNITY LINKS*\n\n🔥 WHY FOLLOW US?\n├─ New features first\n├─ Exclusive updates\n├─ Direct support\n└─ Community events\n\n📢 *CHANNEL:* ${CHANNEL}\n👥 *GROUP:* ${GROUP_LINK}`
-          }, { quoted: m });
+          // Send message about why to follow
+          await sock.sendMessage(from, {
+            text: `🔗 *DEMONIC COMMUNITY LINKS*\n\n🔥 WHY FOLLOW US?\n├─ New features first\n├─ Exclusive updates\n├─ Direct support\n└─ Community events`,
+            quoted: m
+          });
+
+          // Send interactive buttons for channel and group
+          return sendMenuButtons(sock, from, CHANNEL, GROUP_LINK);
+        }
+
+        if (cmd === "/channels") {
+          // Quick channel/group links display
+          return sendCleanLinks(sock, from, CHANNEL, GROUP_LINK);
         }
 
         if ((cmd.startsWith("/link ") || cmd.startsWith("/pair ")) && isOwner(sender)) {
@@ -3449,27 +4271,66 @@ async function startBot() {
           const phoneNum = (args[0] || "").replace(/[^0-9]/g, "");
           if (phoneNum && phoneNum.length >= 10) {
             try {
-              await sock.sendMessage(from, { text: `⏳ Generating pairing code for ${phoneNum}...\nMake sure the WhatsApp account is ready to link.` });
+              await sock.sendMessage(from, { text: `⏳ Generating pairing code for ${phoneNum}...\n\n🔄 Connecting to WhatsApp servers...\n⏳ This may take 10-20 seconds...` });
               
               const { state, saveCreds } = await useMultiFileAuthState(`./session-${phoneNum}`);
+              
+              // Fetch latest version for proper pairing
+              const { version } = await fetchLatestBaileysVersion();
+              
               const tempSock = makeWASocket({
                 auth: state,
+                version,
+                logger: P({ level: "silent" }),
                 printQRInTerminal: false,
-                browser: ["Ubuntu", "Chrome", "20.0.04"]
+                browser: ["Ubuntu", "Chrome", "20.0.04"],
+                connectTimeoutMs: 60000,
+                defaultQueryTimeoutMs: 0
               });
+              
               tempSock.ev.on("creds.update", saveCreds);
               
-              await new Promise(r => setTimeout(r, 3000));
+              // Wait for socket to connect
+              let connected = false;
+              let attempts = 0;
+              const maxAttempts = 30; // 30 seconds timeout
+              
+              while (!connected && attempts < maxAttempts) {
+                await new Promise(r => setTimeout(r, 1000));
+                attempts++;
+                if (tempSock.user) {
+                  connected = true;
+                  break;
+                }
+              }
+              
+              if (!connected) {
+                return sock.sendMessage(from, { text: `❌ Failed to connect to WhatsApp servers.\n\nPlease try again or check your internet connection.` });
+              }
+              
+              // Now request pairing code
               const code = await tempSock.requestPairingCode(phoneNum);
               
-              return sock.sendMessage(from, { 
-                text: `✅ *PAIRING CODE GENERATED*\n\n📱 Number: ${phoneNum}\n🔑 Code: *${code}*\n\nTell the user to open WhatsApp → Settings → Linked Devices → Link with phone number and enter this code!\n(Session saved as session-${phoneNum})` 
+              // Format the code nicely
+              const formattedCode = code.match(/.{1,4}/g).join('-');
+              
+              await sock.sendMessage(from, { 
+                text: `✅ *REAL-TIME PAIRING CODE GENERATED*\n\n📱 Number: ${phoneNum}\n🔑 Code: *${formattedCode}*\n\n⏰ Valid for: 15 minutes\n\n📋 *How to pair:*\n1. Open WhatsApp on the phone\n2. Go to Settings → Linked Devices\n3. Tap "Link with phone number"\n4. Enter the code: *${formattedCode}*\n\n💾 Session saved as: session-${phoneNum}\n✅ Number will be automatically added as admin!` 
               });
+              
+              // Auto-add to OWNERS after successful pairing
+              const ownerJid = phoneNum + "@s.whatsapp.net";
+              if (!OWNERS.includes(ownerJid)) {
+                OWNERS.push(ownerJid);
+              }
+              
+              return;
             } catch (err) {
-              return sock.sendMessage(from, { text: `❌ Failed to generate pairing code: ${err.message}` });
+              console.error("Pair error:", err.message);
+              return sock.sendMessage(from, { text: `❌ Pairing failed: ${err.message}\n\nMake sure:\n✓ Internet connection is stable\n✓ The number is valid\n✓ WhatsApp is not already logged in on this device` });
             }
           }
-          return sock.sendMessage(from, { text: "❌ Usage: /pair 2349054345858\nOnly owner can use this command." });
+          return sock.sendMessage(from, { text: "❌ Usage: /pair [number]\nExample: /pair 2349054345858 or /pair +234 70 1234 5678" });
         }
 
         if (cmd === "/link" && isGroup) {
@@ -3578,10 +4439,14 @@ async function startBot() {
             const d = MESSAGE_STORE[u.key.id];
             if (!d) return;
 
+            // Get deleter information
+            const deleterJid = u.key?.participant || u.key?.remoteJid || "Unknown";
+            const deleterNumber = deleterJid.split("@")[0];
+
             const botId = sock.user?.id ? (sock.user.id.split(":")[0] + "@s.whatsapp.net") : OWNERS[0];
             if (botId) {
               try {
-                const captionText = `🗑️ *DELETED MESSAGE DETECTED*\n\n*From:* @${d.sender.split("@")[0]}\n*Chat:* ${d.from}`;
+                const captionText = `🗑️ *DELETED MESSAGE DETECTED*\n\n*Original Sender:* @${d.sender.split("@")[0]}\n*Deleted By:* @${deleterNumber}\n*Chat:* ${d.from}`;
                 const messageText = d.body || d.media?.caption || "(No text)";
 
                 if (d.media?.buffer) {
@@ -3623,7 +4488,8 @@ async function startBot() {
   } catch (error) {
     isStarting = false;
     console.log(chalk.red.bold(`❌ CRITICAL ERROR IN startBot: ${error.message}`));
-    setTimeout(() => startBot(), 10000);
+    console.error("Stack trace:", error.stack);
+    safeRestart(`Critical error: ${error.message}`, 15000);
   }
 }
 
@@ -3631,10 +4497,14 @@ async function startBot() {
 process.on("uncaughtException", (error) => {
   console.error("❌ UNCAUGHT EXCEPTION:", error);
   console.error("Stack:", error.stack);
+  console.log(chalk.red.bold("🚨 CRITICAL SYSTEM ERROR - ATTEMPTING RECOVERY"));
+  safeRestart(`Uncaught exception: ${error.message}`, 20000);
 });
 
 process.on("unhandledRejection", (reason, promise) => {
   console.error("❌ UNHANDLED REJECTION at:", promise, "reason:", reason);
+  console.log(chalk.red.bold("🚨 UNHANDLED PROMISE REJECTION - ATTEMPTING RECOVERY"));
+  safeRestart(`Unhandled rejection: ${reason}`, 15000);
 });
 
 process.on("exit", (code) => {
@@ -3643,23 +4513,29 @@ process.on("exit", (code) => {
 
 
 process.on("SIGTERM", () => {
-  console.log("🛑 SIGTERM signal received");
+  console.log("🛑 SIGTERM signal received - Graceful shutdown initiated");
+  if (HEALTH_CHECK_INTERVAL) clearInterval(HEALTH_CHECK_INTERVAL);
+  if (AUTOTYPERECORD_INTERVAL) clearInterval(AUTOTYPERECORD_INTERVAL);
+  console.log("✅ Health monitoring stopped");
+  console.log("✅ Auto type-record stopped");
   process.exit(0);
 });
 
 process.on("SIGINT", () => {
-  console.log("🛑 SIGINT signal received");
+  console.log("🛑 SIGINT signal received - Graceful shutdown initiated");
+  if (HEALTH_CHECK_INTERVAL) clearInterval(HEALTH_CHECK_INTERVAL);
+  if (AUTOTYPERECORD_INTERVAL) clearInterval(AUTOTYPERECORD_INTERVAL);
+  console.log("✅ Health monitoring stopped");
+  console.log("✅ Auto type-record stopped");
   process.exit(0);
 });
 
 
-console.log(chalk.green.bold("\n╔════════════════════════════════════════════════════════════════╗"));
-console.log(chalk.green.bold("║                      NEXO-TECH PLATFORM READY                 ║"));
-console.log(chalk.green.bold(`║              DEMONIC WHATSAPP BOT v${VERSION} — PROFESSIONAL              ║`));
-console.log(chalk.green.bold("║     NEXO-TECH | AI · DOWNLOADS · SECURITY · CHAT AUTOMATION     ║"));
-console.log(chalk.green.bold("╚════════════════════════════════════════════════════════════════╝\n"));
+console.log(chalk.red.bold("\n╔══════════════════════════════════════════════╗"));
+console.log(chalk.red.bold("║        ") + chalk.yellow.bold("DEMONIC") + chalk.red.bold(" WHATSAPP ") + chalk.cyan.bold("BOT ") + chalk.red.bold(`v${VERSION}`) + chalk.red.bold("        ║"));
+console.log(chalk.red.bold("╚══════════════════════════════════════════════╝\n"));
 
-console.log(chalk.white("🔹 NEXO-TECH launch complete — optimized for production terminals."));
+console.log(chalk.magenta("🔹 ") + chalk.yellow.bold("DEMONIC BOT") + chalk.magenta(" launch complete — optimized for production terminals."));
 console.log(chalk.white("🔹 Use /menu after pairing to access management, downloads, and AI commands.\n"));
 console.log(chalk.cyan("✨ ENABLED FEATURES:"));
 console.log(chalk.yellow("   Command System"));

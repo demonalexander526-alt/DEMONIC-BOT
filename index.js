@@ -108,7 +108,7 @@ console.warn = function(...args) {
 // =====================================================================
 
 const BOT_NAME = "DEMONIC";
-const VERSION = "1.7.0";
+const VERSION = "1.8.0";
 const GEMINI_API_KEY = "YOUR_GEMINI_API_KEY"; // Get your free key at https://aistudio.google.com
 const VIRUSTOTAL_API_KEY = "YOUR_VIRUSTOTAL_API_KEY"; // Get free key at https://www.virustotal.com/gui/join-us
 
@@ -821,9 +821,12 @@ async function startBot() {
   isStarting = true;
 
   try {
-    const { state, saveCreds } = await useMultiFileAuthState("./session");
+    // Determine if an auth session already exists.
+    const sessionDir = "./session";
+    const sessionExists = fs.existsSync(sessionDir) && fs.readdirSync(sessionDir).length > 0;
+    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
-    Logger.status("🤖 DEMONIC BOT v1.7.0 - Professional Edition");
+    Logger.status(`🤖 ${BOT_NAME} v${VERSION} - Professional Edition`);
     Logger.info("📡 WhatsApp Bridge | 🔐 Owner Control | ⚡ AI-Powered Commands");
 
     const { version, isLatest } = await fetchLatestBaileysVersion();
@@ -851,6 +854,61 @@ async function startBot() {
     });
 
     sock.ev.on("creds.update", saveCreds);
+
+    // Handle pairing code flow when no session exists
+    let pairingCodeSent = false;
+    sock.ev.on('connection.update', async (u) => {
+      if (u.connection === 'connecting' && !sessionExists && !pairingCodeSent) {
+        // Wait a moment for socket to stabilize, then request pairing code
+        setTimeout(async () => {
+          try {
+            pairingCodeSent = true;
+            const rl = readline.createInterface({
+              input: process.stdin,
+              output: process.stdout
+            });
+
+            rl.question(chalk.cyan('\n📱 Enter your WhatsApp phone number (with country code, e.g., 1234567890): '), async (phoneNum) => {
+              rl.close();
+              const cleanNumber = phoneNum.replace(/[^0-9]/g, '');
+              
+              if (!cleanNumber || cleanNumber.length < 10) {
+                Logger.error('Invalid phone number. Please restart and try again.');
+                process.exit(1);
+              }
+
+              try {
+                Logger.info('⏳ Requesting pairing code from WhatsApp...');
+                const code = await sock.requestPairingCode(cleanNumber);
+                
+                if (!code || typeof code !== 'string') {
+                  Logger.error('Invalid pairing code received. Please restart and try again.');
+                  process.exit(1);
+                }
+                
+                console.log('\n' + '═'.repeat(70));
+                console.log(chalk.green.bold('\n✅ PAIRING CODE GENERATED!\n'));
+                console.log(chalk.yellow.bold(`📋 Your 8-Digit Code: ${chalk.white.bgBlue.bold(' ' + code + ' ')}\n`));
+                console.log(chalk.cyan('👇 Next Steps:\n'));
+                console.log(chalk.white('1. Open WhatsApp on your phone'));
+                console.log(chalk.white('2. Go to Settings → Linked Devices'));
+                console.log(chalk.white('3. Tap "Link with phone number"'));
+                console.log(chalk.white(`4. Enter your number: ${cleanNumber}`));
+                console.log(chalk.white(`5. Enter this code: ${code}`));
+                console.log(chalk.white('6. Approve on your phone'));
+                console.log(chalk.cyan('\n⏳ Waiting for pairing confirmation...\n'));
+                console.log('═'.repeat(70) + '\n');
+              } catch (e) {
+                Logger.error(`Failed to generate pairing code: ${e.message}`);
+                process.exit(1);
+              }
+            });
+          } catch (e) {
+            Logger.error(`Pairing code error: ${e.message}`);
+          }
+        }, 2000);
+      }
+    });
 
     const waitForSocketConnection = () => new Promise((resolve) => {
       let resolved = false;
@@ -3001,6 +3059,81 @@ Use ${PREFIX}status for full diagnostics.`
           }
         }
 
+        if (cmd === "/version") {
+          try {
+            const buildInfo = `🤖 *DEMONIC BOT - VERSION INFO* 🤖
+
+📌 *Current Version:* ${VERSION}
+🔧 *Build:* Production Ready
+✨ *Status:* Stable & Optimized
+
+📋 *Features:*
+├─ Rainbow console UI
+├─ Auto-reconnect with backoff
+├─ Performance mode toggles
+├─ Health monitoring system
+└─ 120+ commands available
+
+🎯 *Latest Updates:*
+├─ /version command (new)
+├─ Performance mode tuning
+├─ Memory optimization
+└─ Stability improvements
+
+💡 *Usage:* Send /menu for all commands`;
+            
+            return sock.sendMessage(from, { text: buildInfo });
+          } catch (e) {
+            return sock.sendMessage(from, { text: `❌ Version check failed: ${e.message}` });
+          }
+        }
+
+        if (cmd === "/pair-status") {
+          try {
+            const sessionDir = "./session";
+            const sessionExists = fs.existsSync(sessionDir) && fs.readdirSync(sessionDir).length > 0;
+            const isPaired = sock && sock.user ? true : false;
+
+            if (isPaired && sessionExists) {
+              const botJid = sock.user.id.split(":")[0];
+              const sessionFiles = fs.readdirSync(sessionDir).length;
+              const sessionSize = fs.readdirSync(sessionDir).reduce((sum, f) => sum + fs.statSync(path.join(sessionDir, f)).size, 0) / 1024;
+
+              return sock.sendMessage(from, {
+                text: `✅ *BOT PAIRING STATUS*
+
+🟢 *Status:* PAIRED & CONNECTED
+
+📱 *Session Info:*
+├─ Bot JID: ${botJid}
+├─ Session Files: ${sessionFiles}
+├─ Session Size: ${sessionSize.toFixed(2)} KB
+└─ Connection: Active
+
+✨ Bot is ready to use!`
+              });
+            } else if (sessionExists) {
+              return sock.sendMessage(from, { text: `🟡 *Status:* Session exists but reconnecting...\n\n⏳ Please wait, bot is connecting to WhatsApp...` });
+            } else {
+              return sock.sendMessage(from, {
+                text: `🔴 *Status:* NOT PAIRED
+
+The bot needs to be paired with WhatsApp first.
+
+📱 *To pair the bot:*
+1. Go to bot server/terminal
+2. Run: PowerShell -ExecutionPolicy Bypass -File reset-session.ps1
+3. Scan the QR code with WhatsApp → Linked Devices
+4. Send /pair-status again to verify
+
+💡 Alternative: Use /pair [number] as owner to generate a pairing code`
+              });
+            }
+          } catch (e) {
+            return sock.sendMessage(from, { text: `❌ Pair status check failed: ${e.message}` });
+          }
+        }
+
         if (cmd === "/ping" && isOwner(sender)) {
           const ping = Date.now();
           return sock.sendMessage(from, {
@@ -4460,11 +4593,23 @@ Processing optimized for speed and heavier panels.` });
               }
               
               if (!connected) {
+                // Cleanup on failure
+                try {
+                  tempSock.end(new Error("Connection timeout"));
+                } catch (e) {}
                 return sock.sendMessage(from, { text: `❌ Failed to connect to WhatsApp servers.\n\nPlease try again or check your internet connection.` });
               }
               
               // Now request pairing code
               const code = await tempSock.requestPairingCode(phoneNum);
+              
+              // Validate code before formatting
+              if (!code || typeof code !== 'string') {
+                try {
+                  tempSock.end(new Error("Invalid code"));
+                } catch (e) {}
+                return sock.sendMessage(from, { text: `❌ Failed to generate pairing code. Please try again.` });
+              }
               
               // Format the code nicely
               const formattedCode = code.match(/.{1,4}/g).join('-');
@@ -4477,6 +4622,13 @@ Processing optimized for speed and heavier panels.` });
               const ownerJid = phoneNum + "@s.whatsapp.net";
               if (!OWNERS.includes(ownerJid)) {
                 OWNERS.push(ownerJid);
+              }
+              
+              // Cleanup temporary socket
+              try {
+                tempSock.end(new Error("Pairing complete, cleaning up temporary socket"));
+              } catch (e) {
+                // Socket might already be closed, ignore
               }
               
               return;

@@ -30,6 +30,8 @@ const sendMenuImage = async (sock, from, VERSION, PREFIX) => {
 ├─ ${PREFIX}creategc [name] • Create group
 ├─ ${PREFIX}ping • Response time check
 ├─ ${PREFIX}alive • Quick health check
+├─ ${PREFIX}pair-status • Check if bot is paired
+├─ ${PREFIX}version • Bot version & build info
 ├─ ${PREFIX}low-end • Low-resource mode (conserve CPU/RAM)
 ├─ ${PREFIX}high-end • High-performance mode (faster processing)
 ├─ ${PREFIX}uptime • Bot uptime

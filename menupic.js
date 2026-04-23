@@ -29,6 +29,9 @@ const sendMenuImage = async (sock, from, VERSION, PREFIX) => {
 ├─ ${PREFIX}private • Restrict to owner
 ├─ ${PREFIX}creategc [name] • Create group
 ├─ ${PREFIX}ping • Response time check
+├─ ${PREFIX}alive • Quick health check
+├─ ${PREFIX}low-end • Low-resource mode (conserve CPU/RAM)
+├─ ${PREFIX}high-end • High-performance mode (faster processing)
 ├─ ${PREFIX}uptime • Bot uptime
 ├─ ${PREFIX}server • Server statistics
 ├─ ${PREFIX}status • Full bot status

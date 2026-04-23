@@ -33,6 +33,27 @@ const axios = require("axios");
 const COLORS = ['red', 'yellow', 'green', 'blue', 'magenta', 'cyan'];
 let colorIndex = 0;
 
+// ANSI rainbow color codes for vibrant console output
+const RAINBOW_CODES = ['\x1b[91m', '\x1b[93m', '\x1b[92m', '\x1b[94m', '\x1b[95m', '\x1b[96m'];
+const RESET_COLOR = '\x1b[0m';
+
+function rainbowify(text) {
+  if (!text) return '';
+  let out = '';
+  let codeIndex = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    // preserve spaces for alignment
+    if (ch === ' ') {
+      out += ch;
+    } else {
+      out += RAINBOW_CODES[codeIndex % RAINBOW_CODES.length] + ch + RESET_COLOR;
+      codeIndex++;
+    }
+  }
+  return out;
+}
+
 const Logger = {
   // Rainbow colored message logger
   message: (direction, sender, text, type = 'text') => {
@@ -49,17 +70,18 @@ const Logger = {
   },
   
   status: (msg) => {
-    console.log(`${chalk.cyan('━'.repeat(60))}`);
-    console.log(`${chalk.green('✓')} ${msg}`);
-    console.log(`${chalk.cyan('━'.repeat(60))}`);
+    const line = '━'.repeat(60);
+    console.log(rainbowify(line));
+    console.log(rainbowify(`  ✓  ${msg}  `));
+    console.log(rainbowify(line));
   },
   
   error: (msg) => {
-    console.log(`${chalk.red('✗')} ${msg}`);
+    console.log(rainbowify(`✗ ${msg}`));
   },
   
   info: (msg) => {
-    console.log(`${chalk.blue('ℹ')} ${msg}`);
+    console.log(rainbowify(`ℹ ${msg}`));
   }
 };
 
@@ -163,6 +185,183 @@ let RESTART_COUNT = 0;
 const MAX_RESTARTS = 5;
 const RESTART_WINDOW = 300000; // 5 minutes window for restart counting
 
+// Global socket reference and reconnect attempts counter
+let sock = null;
+let reconnectAttempts = 0;
+
+// Performance mode configuration (low / high)
+let PERFORMANCE_MODE = CONFIG.PERFORMANCE_MODE || "low";
+let AUTO_BIO_INTERVAL_MS = PERFORMANCE_MODE === "high" ? 300000 : 1800000;
+let KEEPALIVE_PRESENCE_MS = PERFORMANCE_MODE === "high" ? 60000 : 300000;
+let ENHANCED_KEEPALIVE_MS = PERFORMANCE_MODE === "high" ? 60000 : 180000;
+let HEALTH_CHECK_INTERVAL_MS = PERFORMANCE_MODE === "high" ? 60000 : 120000;
+let CONNECTION_CHECK_INTERVAL_MS = PERFORMANCE_MODE === "high" ? 60000 : 120000;
+let RETRY_REQUEST_DELAY_MS = PERFORMANCE_MODE === "high" ? 200 : 500;
+let KEEP_ALIVE_INTERVAL_MS = PERFORMANCE_MODE === "high" ? 15000 : 30000;
+let MAX_CACHED_MESSAGES = PERFORMANCE_MODE === "high" ? 1000 : 100;
+let MAX_CACHE_SIZE = PERFORMANCE_MODE === "high" ? 200000000 : 50000000;
+const STATUS_REPORT_MS = 24 * 60 * 60 * 1000;
+
+let AUTO_BIO_INTERVAL_HANDLE = null;
+let KEEPALIVE_INTERVAL_HANDLE = null;
+let ENHANCED_KEEPALIVE_HANDLE = null;
+let STATUS_REPORT_HANDLE = null;
+
+function setupAutoBio(sockRef) {
+  if (AUTO_BIO_INTERVAL_HANDLE) clearInterval(AUTO_BIO_INTERVAL_HANDLE);
+  if (!sockRef || !sockRef.updateProfileStatus) return;
+  AUTO_BIO_INTERVAL_HANDLE = setInterval(async () => {
+    try {
+      updateHeartbeat();
+      const uptime = process.uptime();
+      const days = Math.floor(uptime / (3600 * 24));
+      const hours = Math.floor((uptime % (3600 * 24)) / 3600);
+      const minutes = Math.floor((uptime % 3600) / 60);
+      const status = `🤖 DEMONIC v${VERSION} | 🟢 Online | ⏱️ Uptime: ${days}d ${hours}h ${minutes}m`;
+      await sockRef.updateProfileStatus(status);
+    } catch (e) {
+      // ignore
+    }
+  }, AUTO_BIO_INTERVAL_MS);
+}
+
+function setupKeepAlive(sockRef) {
+  if (KEEPALIVE_INTERVAL_HANDLE) clearInterval(KEEPALIVE_INTERVAL_HANDLE);
+  if (!sockRef || !sockRef.sendPresenceUpdate) return;
+  KEEPALIVE_INTERVAL_HANDLE = setInterval(async () => {
+    try {
+      await sockRef.sendPresenceUpdate('available');
+      updateHeartbeat();
+    } catch (e) {
+      // ignore
+    }
+  }, KEEPALIVE_PRESENCE_MS);
+}
+
+function setupEnhancedKeepAlive(sockRef) {
+  if (ENHANCED_KEEPALIVE_HANDLE) clearInterval(ENHANCED_KEEPALIVE_HANDLE);
+  if (!sockRef || !sockRef.sendPresenceUpdate) return;
+  ENHANCED_KEEPALIVE_HANDLE = setInterval(async () => {
+    try {
+      await sockRef.sendPresenceUpdate('available');
+      updateHeartbeat();
+    } catch (e) {
+      // ignore
+    }
+  }, ENHANCED_KEEPALIVE_MS);
+}
+
+function setupStatusReport(sockRef) {
+  if (STATUS_REPORT_HANDLE) clearInterval(STATUS_REPORT_HANDLE);
+  if (!sockRef) return;
+  STATUS_REPORT_HANDLE = setInterval(async () => {
+    try {
+      updateHeartbeat();
+
+      const uptime = process.uptime();
+      const days = Math.floor(uptime / (3600 * 24));
+      const hours = Math.floor((uptime % (3600 * 24)) / 3600);
+      const minutes = Math.floor((uptime % 3600) / 60);
+      const seconds = Math.floor(uptime % 60);
+
+      const memoryUsage = process.memoryUsage();
+      const memMB = Math.round(memoryUsage.heapUsed / 1024 / 1024);
+
+      const timeSinceHeartbeat = Date.now() - LAST_HEARTBEAT;
+      const heartbeatStatus = timeSinceHeartbeat < 120000 ? "🟢 HEALTHY" : "🟡 WARNING";
+
+      const restartStatus = RESTART_COUNT > 0 ?
+        `🔄 ${RESTART_COUNT} restart${RESTART_COUNT > 1 ? 's' : ''} in last session` :
+        "✅ No restarts needed";
+
+      const currentTime = new Date().toLocaleString('en-US', {
+        timeZone: 'UTC',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit'
+      });
+
+      const statusReport = `🤖 *DEMONIC BOT - 24H STATUS REPORT* 🤖\n\n` +
+            `⏰ *Report Time:* ${currentTime} UTC\n\n` +
+            `📊 *System Info:*\n` +
+            `├─ Version: ${VERSION}\n` +
+            `├─ Uptime: ${days}d ${hours}h ${minutes}m ${seconds}s\n` +
+            `├─ Memory: ${memMB} MB\n` +
+            `├─ Heartbeat: ${heartbeatStatus}\n` +
+            `└─ Restarts: ${restartStatus}\n\n` +
+            `🛡️ *Stability Features:*\n` +
+            `├─ Auto-Restart: ✅ ACTIVE\n` +
+            `├─ Health Monitor: ✅ RUNNING\n` +
+            `├─ Crash Recovery: ✅ ENABLED\n` +
+            `├─ Memory Management: ✅ ACTIVE\n` +
+            `└─ Connection Monitoring: ✅ ACTIVE\n\n` +
+            `⚡ *Bot Settings:*\n` +
+            `├─ Prefix: ${PREFIX}\n` +
+            `├─ Public Mode: ${PUBLIC ? 'ON' : 'OFF'}\n` +
+            `├─ Anti-Link: ${ANTILINK ? 'ON' : 'OFF'}\n` +
+            `├─ Anti-Bug: ${Object.keys(ANTIBUG).length > 0 ? 'ON' : 'OFF'}\n` +
+            `├─ Welcome System: ${WELCOME ? 'ON' : 'OFF'}\n` +
+            `├─ Offline Mode: ${OFFLINE_MODE ? 'ON' : 'OFF'}\n` +
+            `└─ Auto-React: ${AUTOREACT ? 'ON' : 'OFF'}\n\n` +
+            `📈 *Activity Stats:*\n` +
+            `└─ Last Activity: ${new Date(LAST_MESSAGE_TIME || Date.now()).toLocaleString()}\n\n` +
+            `🔗 *Quick Links:*\n` +
+            `├─ Channel: ${CHANNEL}\n` +
+            `└─ Group: ${GROUP_LINK}\n\n` +
+            `💡 *Next Report:* 24 hours from now\n` +
+            `📞 *Status:* All systems operational`;
+
+      for (const ownerJid of OWNERS) {
+        try {
+          await sockRef.sendMessage(ownerJid, { text: statusReport });
+        } catch (error) {
+          // ignore
+        }
+      }
+
+    } catch (error) {
+      // ignore
+    }
+  }, STATUS_REPORT_MS);
+}
+
+function applyPerformanceMode(mode) {
+  if (!mode) return;
+  PERFORMANCE_MODE = mode;
+  if (mode === 'high') {
+    AUTO_BIO_INTERVAL_MS = 300000;
+    KEEPALIVE_PRESENCE_MS = 60000;
+    ENHANCED_KEEPALIVE_MS = 60000;
+    HEALTH_CHECK_INTERVAL_MS = 60000;
+    CONNECTION_CHECK_INTERVAL_MS = 60000;
+    RETRY_REQUEST_DELAY_MS = 200;
+    KEEP_ALIVE_INTERVAL_MS = 15000;
+    MAX_CACHED_MESSAGES = 1000;
+    MAX_CACHE_SIZE = 200000000;
+  } else {
+    AUTO_BIO_INTERVAL_MS = 1800000;
+    KEEPALIVE_PRESENCE_MS = 300000;
+    ENHANCED_KEEPALIVE_MS = 180000;
+    HEALTH_CHECK_INTERVAL_MS = 120000;
+    CONNECTION_CHECK_INTERVAL_MS = 120000;
+    RETRY_REQUEST_DELAY_MS = 500;
+    KEEP_ALIVE_INTERVAL_MS = 30000;
+    MAX_CACHED_MESSAGES = 100;
+    MAX_CACHE_SIZE = 50000000;
+  }
+  try { CONFIG.PERFORMANCE_MODE = mode; fs.writeFileSync(CONFIG_PATH, JSON.stringify(CONFIG, null, 2)); } catch (e) {}
+  setupAutoBio(sock);
+  setupKeepAlive(sock);
+  setupEnhancedKeepAlive(sock);
+  setupStatusReport(sock);
+  startHealthCheck();
+  startConnectionMonitoring();
+  Logger.info(`Performance mode: ${mode}`);
+}
+
 // Memory management for 24/7 stability
 let MEMORY_CLEANUP_INTERVAL;
 function startMemoryManagement() {
@@ -228,6 +427,29 @@ function safeRestart(reason = "Unknown", delay = RESTART_DELAY) {
   }, delay);
 }
 
+// Persistent reconnect with exponential backoff that does not count against safe restart limits
+function reconnectWithBackoff(reason = 'unknown', attempt = 1) {
+  try {
+    if (isStarting) return;
+    reconnectAttempts = attempt;
+    const delay = Math.min(60000, 2000 * attempt); // cap at 60s
+    Logger.info(`🔁 Reconnect attempt #${attempt} in ${delay/1000}s — reason: ${String(reason).slice(0,100)}`);
+
+    setTimeout(async () => {
+      try {
+        if (isStarting) return;
+        await startBot();
+      } catch (err) {
+        Logger.error(`Reconnect attempt #${attempt} failed: ${err?.message || err}`);
+        // schedule next attempt with increased backoff
+        reconnectWithBackoff(reason, Math.min(30, attempt + 1));
+      }
+    }, delay);
+  } catch (e) {
+    // swallow errors to avoid crash
+  }
+}
+
 // Auto type-record loop function
 function startAutoTypeRecord(sock, chatId) {
   if (AUTOTYPERECORD_INTERVAL) {
@@ -278,7 +500,7 @@ function startHealthCheck() {
     if (timeSinceLastHeartbeat > 600000) {
       safeRestart("Health check failed - no heartbeat", 10000);
     }
-  }, 120000); // Check every 2 minutes
+  }, HEALTH_CHECK_INTERVAL_MS);
 }
 
 // Connection stability monitoring
@@ -291,6 +513,7 @@ function startConnectionMonitoring() {
 
   CONNECTION_CHECK_INTERVAL = setInterval(async () => {
     try {
+      if (!sock || !sock.sendPresenceUpdate) return;
       const now = Date.now();
       const timeSinceLastCheck = now - LAST_CONNECTION_CHECK;
 
@@ -313,7 +536,7 @@ function startConnectionMonitoring() {
     } catch (e) {
       CONNECTION_QUALITY = 'poor';
     }
-  }, 120000); // Check every 2 minutes
+  }, CONNECTION_CHECK_INTERVAL_MS);
 }
 
 function updateConnectionActivity() {
@@ -605,7 +828,7 @@ async function startBot() {
 
     const { version, isLatest } = await fetchLatestBaileysVersion();
 
-    const sock = makeWASocket({
+    sock = makeWASocket({
       auth: state,
       version,
       logger: P({ level: "silent" }),
@@ -613,18 +836,18 @@ async function startBot() {
       browser: ["Ubuntu", "Chrome", "20.0.04"],
       connectTimeoutMs: 120000,         // Connection timeout
       defaultQueryTimeoutMs: 0,
-      keepAliveIntervalMs: 30000,       // Increased for low-end systems (30s instead of 5s)
+      keepAliveIntervalMs: KEEP_ALIVE_INTERVAL_MS,       // Dynamic keep-alive interval
       emitOwnEvents: true,
       fireInitQueries: false,           // Disabled for low-end panels
       generateHighQualityLinkPreview: false,  // Disable for low-end systems
       syncFullHistory: false,           // Already disabled - good for performance
       markOnlineOnConnect: true,
       shouldSyncHistoryMessage: () => false,
-      retryRequestDelayMs: 500,         // Increased for stability
+      retryRequestDelayMs: RETRY_REQUEST_DELAY_MS,         // Dynamic retry delay
       maxMsToWaitForConnection: 60000,  // Wait up to 60s for connection
       // Low-end system optimizations
-      maxCachedMessages: 100,           // Limit message cache
-      maxCacheSize: 50000000            // Limit cache size (50MB)
+      maxCachedMessages: MAX_CACHED_MESSAGES,           // Dynamic cache sizes
+      maxCacheSize: MAX_CACHE_SIZE            // Dynamic cache size
     });
 
     sock.ev.on("creds.update", saveCreds);
@@ -662,139 +885,33 @@ async function startBot() {
         isStarting = false;
         RESTART_COUNT = 0; // Reset restart count on successful connection
         updateHeartbeat();
-        startHealthCheck();
         startMemoryManagement();
-        startConnectionMonitoring();
+        reconnectAttempts = 0; // reset persistent reconnect attempts on success
         Logger.status("✅ BOT CONNECTED - Ready to receive messages");
 
-        // Professional Feature: Auto Bio Status Updater - optimized
-        setInterval(async () => {
-          try {
-            updateHeartbeat(); // Update heartbeat during bio updates
-            const uptime = process.uptime();
-            const days = Math.floor(uptime / (3600 * 24));
-            const hours = Math.floor((uptime % (3600 * 24)) / 3600);
-            const minutes = Math.floor((uptime % 3600) / 60);
-            const status = `🤖 DEMONIC v${VERSION} | 🟢 Online | ⏱️ Uptime: ${days}d ${hours}h ${minutes}m`;
-            await sock.updateProfileStatus(status);
-          } catch (e) {
-            // ignore if unsupported by the account
-          }
-        }, 1800000); // Updates every 30 minutes (instead of 5 minutes) for low-end systems
-
-        // Keep-alive mechanism to prevent disconnection - optimized for low-end systems
-        setInterval(async () => {
-          try {
-            await sock.sendPresenceUpdate('available');
-            updateHeartbeat();
-          } catch (e) {
-            // ignore errors - bot might be temporarily disconnected
-          }
-        }, 300000); // Every 5 minutes for low-end systems (instead of 2 minutes)
-
-        // 24-Hour Status Report to Owners' DMs
-        setInterval(async () => {
-          try {
-            updateHeartbeat(); // Update heartbeat during status reports
-
-            const uptime = process.uptime();
-            const days = Math.floor(uptime / (3600 * 24));
-            const hours = Math.floor((uptime % (3600 * 24)) / 3600);
-            const minutes = Math.floor((uptime % 3600) / 60);
-            const seconds = Math.floor(uptime % 60);
-
-            const memoryUsage = process.memoryUsage();
-            const memMB = Math.round(memoryUsage.heapUsed / 1024 / 1024);
-
-            const timeSinceHeartbeat = Date.now() - LAST_HEARTBEAT;
-            const heartbeatStatus = timeSinceHeartbeat < 120000 ? "🟢 HEALTHY" : "🟡 WARNING";
-
-            const restartStatus = RESTART_COUNT > 0 ?
-              `🔄 ${RESTART_COUNT} restart${RESTART_COUNT > 1 ? 's' : ''} in last session` :
-              "✅ No restarts needed";
-
-            const currentTime = new Date().toLocaleString('en-US', {
-              timeZone: 'UTC',
-              year: 'numeric',
-              month: 'long',
-              day: 'numeric',
-              hour: '2-digit',
-              minute: '2-digit',
-              second: '2-digit'
-            });
-
-            const statusReport = `🤖 *DEMONIC BOT - 24H STATUS REPORT* 🤖\n\n` +
-                  `⏰ *Report Time:* ${currentTime} UTC\n\n` +
-                  `📊 *System Info:*\n` +
-                  `├─ Version: ${VERSION}\n` +
-                  `├─ Uptime: ${days}d ${hours}h ${minutes}m ${seconds}s\n` +
-                  `├─ Memory: ${memMB} MB\n` +
-                  `├─ Heartbeat: ${heartbeatStatus}\n` +
-                  `└─ Restarts: ${restartStatus}\n\n` +
-                  `🛡️ *Stability Features:*\n` +
-                  `├─ Auto-Restart: ✅ ACTIVE\n` +
-                  `├─ Health Monitor: ✅ RUNNING\n` +
-                  `├─ Crash Recovery: ✅ ENABLED\n` +
-                  `├─ Memory Management: ✅ ACTIVE\n` +
-                  `└─ Connection Monitoring: ✅ ACTIVE\n\n` +
-                  `⚡ *Bot Settings:*\n` +
-                  `├─ Prefix: ${PREFIX}\n` +
-                  `├─ Public Mode: ${PUBLIC ? 'ON' : 'OFF'}\n` +
-                  `├─ Anti-Link: ${ANTILINK ? 'ON' : 'OFF'}\n` +
-                  `├─ Anti-Bug: ${Object.keys(ANTIBUG).length > 0 ? 'ON' : 'OFF'}\n` +
-                  `├─ Welcome System: ${WELCOME ? 'ON' : 'OFF'}\n` +
-                  `├─ Offline Mode: ${OFFLINE_MODE ? 'ON' : 'OFF'}\n` +
-                  `└─ Auto-React: ${AUTOREACT ? 'ON' : 'OFF'}\n\n` +
-                  `📈 *Activity Stats:*\n` +
-                  `└─ Last Activity: ${new Date(LAST_MESSAGE_TIME || Date.now()).toLocaleString()}\n\n` +
-                  `🔗 *Quick Links:*\n` +
-                  `├─ Channel: ${CHANNEL}\n` +
-                  `└─ Group: ${GROUP_LINK}\n\n` +
-                  `💡 *Next Report:* 24 hours from now\n` +
-                  `📞 *Status:* All systems operational`;
-
-            // Send status report to all owners
-            for (const ownerJid of OWNERS) {
-              try {
-                await sock.sendMessage(ownerJid, { text: statusReport });
-                // Status sent silently
-              } catch (error) {
-                // Failed to send - ignore
-              }
-            }
-
-          } catch (error) {
-            // Error generating status - ignore
-          }
-        }, 24 * 60 * 60 * 1000); // Every 24 hours (24 * 60 * 60 * 1000 ms)
+        // Apply configured performance mode (starts health checks, keepalives, and reports)
+        applyPerformanceMode(PERFORMANCE_MODE);
 
         Logger.status(`✅ ${BOT_NAME} v${VERSION} IS NOW ONLINE!`);
       }
 
       if (update.connection === "close") {
-        const reason = lastDisconnect?.error?.output?.statusCode;
-        const errorMessage = lastDisconnect?.error?.message || "Unknown reason";
+        const errorMessage = lastDisconnect?.error?.message || (lastDisconnect && JSON.stringify(lastDisconnect)) || "Unknown reason";
+        const reason = lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.output?.payload || null;
 
         isStarting = false;
 
         Logger.error(`DISCONNECTED: ${errorMessage}`);
 
-        if (reason === DisconnectReason.loggedOut) {
+        // If logged out, exit and request re-pair
+        if (reason === DisconnectReason.loggedOut || lastDisconnect?.error?.output?.payload?.statusCode === DisconnectReason.loggedOut) {
           Logger.error("Logged out. Please clear session folder and re-scan/re-pair.");
-          // Only exit if truly logged out
           process.exit(1);
-        } else if (reason === DisconnectReason.connectionClosed) {
-          safeRestart(`Connection closed temporarily`, 3000);
-        } else if (reason === DisconnectReason.connectionLost) {
-          safeRestart(`Connection lost temporarily`, 5000);
-        } else if (reason === DisconnectReason.connectionReplaced) {
-          safeRestart(`Connection replaced`, 8000);
-        } else if (reason === DisconnectReason.timedOut) {
-          safeRestart(`Connection timed out`, 5000);
-        } else {
-          // For ALL other reasons, attempt reconnect
-          safeRestart(`Connection closed`, 10000);
         }
+
+        // For other disconnections, schedule a persistent reconnect (non-fatal)
+        Logger.info("Scheduling persistent reconnect with backoff...");
+        reconnectWithBackoff(errorMessage);
       }
     });
 
@@ -867,15 +984,8 @@ async function startBot() {
       askNumber();
     }
 
-    // Enhanced keep-alive system - aggressive to prevent disconnection
-    setInterval(async () => {
-      try {
-        await sock.sendPresenceUpdate('available');
-        updateHeartbeat();
-      } catch (e) {
-        // Connection might be temporarily unstable, will recover automatically
-      }
-    }, 180000); // Every 3 minutes for maximum stability
+    // Enhanced keep-alive (uses performance mode interval)
+    setupEnhancedKeepAlive(sock);
     sock.ev.on("call", async (calls) => {
       if (!ANTICALL) return;
       for (const call of calls) {
@@ -1914,7 +2024,8 @@ ${stabilityIndicators.map(ind => `├─ ${ind}`).join('\n')}
           });
         }
 
-        if (cmd === "/online" && isGroup) {
+        // Group /online: list online members. Do not shadow owner /online toggle.
+        if (cmd === "/online" && isGroup && !isOwner(sender)) {
           const now = Date.now();
           const online = Object.entries(LAST_SEEN)
             .filter(([_, t]) => now - t < 5 * 60 * 1000)
@@ -2859,6 +2970,37 @@ ${stabilityIndicators.map(ind => `├─ ${ind}`).join('\n')}
         }
 
 
+        if (cmd === "/alive") {
+          try {
+            const now = Date.now();
+            const uptime = process.uptime();
+            const days = Math.floor(uptime / (3600 * 24));
+            const hours = Math.floor((uptime % (3600 * 24)) / 3600);
+            const minutes = Math.floor((uptime % 3600) / 60);
+            const seconds = Math.floor(uptime % 60);
+
+            const memMB = Math.round(process.memoryUsage().heapUsed / 1024 / 1024);
+            const timeSinceHeartbeat = Date.now() - LAST_HEARTBEAT;
+            const heartbeatStatus = timeSinceHeartbeat < 120000 ? '🟢 HEALTHY' : (timeSinceHeartbeat < 600000 ? '🟡 SLOW' : '🔴 NO HEARTBEAT');
+            const socketStatus = sock && sock.user ? '🟢 Connected' : '🔴 Disconnected';
+
+            return sock.sendMessage(from, {
+              text: `🩺 *ALIVE CHECK*
+
+Status: ${socketStatus}
+Connection: ${CONNECTION_QUALITY}
+Heartbeat: ${heartbeatStatus} (${Math.round(timeSinceHeartbeat/1000)}s ago)
+Uptime: ${days}d ${hours}h ${minutes}m ${seconds}s
+Memory: ${memMB} MB
+Last Activity: ${new Date(LAST_MESSAGE_TIME || Date.now()).toLocaleString()}
+
+Use ${PREFIX}status for full diagnostics.`
+            });
+          } catch (e) {
+            return sock.sendMessage(from, { text: `❌ Alive check failed: ${e.message || e}` });
+          }
+        }
+
         if (cmd === "/ping" && isOwner(sender)) {
           const ping = Date.now();
           return sock.sendMessage(from, {
@@ -2984,6 +3126,19 @@ ${stabilityIndicators.map(ind => `├─ ${ind}`).join('\n')}
           return sock.sendMessage(from, {
             text: "🔒 Bot is now in PRIVATE mode"
           });
+        }
+
+        // Performance mode toggles
+        if (cmd === "/low-end" && isOwner(sender)) {
+          applyPerformanceMode('low');
+          return sock.sendMessage(from, { text: `✅ Performance: LOW-END
+Optimized for low-resource environments. Processing tuned for stability.` });
+        }
+
+        if (cmd === "/high-end" && isOwner(sender)) {
+          applyPerformanceMode('high');
+          return sock.sendMessage(from, { text: `⚡ Performance: HIGH-END
+Processing optimized for speed and heavier panels.` });
         }
 
         // OFFLINE MODE - Owner only
@@ -4548,4 +4703,43 @@ console.log(chalk.yellow("  🎮 Games (Dare/Truth)"));
 console.log(chalk.yellow("  🔐 Owner Commands\n"));
 console.log(chalk.yellow("    Demonic Commands\n"));
 
-startBot();
+if (require.main === module) {
+  startBot();
+} else {
+  // Required as a module (tests or tools) — do not auto-start the bot
+}
+
+function getPerformanceSettings() {
+  return {
+    mode: PERFORMANCE_MODE,
+    AUTO_BIO_INTERVAL_MS,
+    KEEPALIVE_PRESENCE_MS,
+    ENHANCED_KEEPALIVE_MS,
+    HEALTH_CHECK_INTERVAL_MS,
+    CONNECTION_CHECK_INTERVAL_MS,
+    RETRY_REQUEST_DELAY_MS,
+    KEEP_ALIVE_INTERVAL_MS,
+    MAX_CACHED_MESSAGES,
+    MAX_CACHE_SIZE
+  };
+}
+
+function stopAllMonitors() {
+  try {
+    if (AUTO_BIO_INTERVAL_HANDLE) clearInterval(AUTO_BIO_INTERVAL_HANDLE);
+    if (KEEPALIVE_INTERVAL_HANDLE) clearInterval(KEEPALIVE_INTERVAL_HANDLE);
+    if (ENHANCED_KEEPALIVE_HANDLE) clearInterval(ENHANCED_KEEPALIVE_HANDLE);
+    if (STATUS_REPORT_HANDLE) clearInterval(STATUS_REPORT_HANDLE);
+    if (HEALTH_CHECK_INTERVAL) clearInterval(HEALTH_CHECK_INTERVAL);
+    if (CONNECTION_CHECK_INTERVAL) clearInterval(CONNECTION_CHECK_INTERVAL);
+    if (MEMORY_CLEANUP_INTERVAL) clearInterval(MEMORY_CLEANUP_INTERVAL);
+  } catch (e) {
+    // ignore
+  }
+}
+
+module.exports = {
+  applyPerformanceMode,
+  getPerformanceSettings,
+  stopAllMonitors
+};
